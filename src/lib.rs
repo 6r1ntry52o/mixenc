@@ -4,10 +4,12 @@
 #[cfg(not(windows))]
 compile_error!("mixenc runs on Windows: it reads CP932 with Windows' own table");
 
+pub mod analysis;
 pub mod cmdline;
 pub mod colmap;
 pub mod config;
 pub mod convert;
+pub mod copilot;
 pub mod cp932;
 pub mod db;
 pub mod defaults;
@@ -21,10 +23,13 @@ pub mod git;
 pub mod hooks;
 pub mod index;
 pub mod judge;
+pub mod locate;
 pub mod lsp;
+pub mod lspclient;
 pub mod mcp;
 pub mod mirror;
 pub mod paths;
+pub mod search;
 pub mod sync;
 pub mod text;
 pub mod toolchain;

@@ -16,6 +16,20 @@ pub fn to_path(uri: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path.replace('/', "\\")))
 }
 
+/// The `file:` URI of an absolute path (`file:///C:/src/a%20b.cpp`).
+pub fn from_path(path: &std::path::Path) -> String {
+    let p = crate::paths::forward(&path.to_string_lossy());
+    let mut out = String::from(if p.starts_with("//") { "file:" } else { "file:///" });
+    for b in p.bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~:".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 fn percent_decode(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -44,5 +58,14 @@ mod tests {
         assert_eq!(to_path("file://server/share/a.h"), Some(PathBuf::from(r"\\server\share\a.h")));
         assert_eq!(to_path("untitled:Untitled-1"), None);
         assert_eq!(to_path("file:///c%3A/a%20b/c%25"), Some(PathBuf::from(r"c:\a b\c%")));
+    }
+
+    #[test]
+    fn paths_to_uris_and_back() {
+        for p in [r"C:\src\表 1.h", r"\\server\share\a#b.h", r"C:\a%b\c.cpp"] {
+            let uri = from_path(std::path::Path::new(p));
+            assert_eq!(to_path(&uri), Some(PathBuf::from(p)), "{uri}");
+        }
+        assert_eq!(from_path(std::path::Path::new(r"C:\a b\c.cpp")), "file:///C:/a%20b/c.cpp");
     }
 }

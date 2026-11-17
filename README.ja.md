@@ -29,10 +29,7 @@ mixenc はリポの**写し**を UTF-8 でリポの外に作ります（行と�
 - **長いパス。** 約 950 文字のパスでも動きます。clangd が索引を保存できない長い名前（235 文字以上）は、doctor が一覧に出します。
 - **何も外に出さない。** テレメトリも通信もありません。doctor の出力にはパスが入るので、作った PC の中に置いておきます。
 
-**状態: 5 段のうち段 3。** この版でできるのは、判定・写す・写しの DB・doctor の短い版・入口（`mixenc clangd`）・正門（`mixenc edit` と、原本を元の文字コードで書く MCP の道具）・commit の関所（git の pre-commit）です。これから作るものは次のとおりです。
-- 解析の道具と解析エージェント
-- Copilot のフック
-- VS Code 拡張
+**状態: 5 段のうち段 4。** この版でできるのは、判定・写す・写しの DB・doctor の短い版・入口（`mixenc clangd`）・解析の道具（MCP で clangd の答えを返す）と解析エージェント・正門（`mixenc edit` と、原本を元の文字コードで書く MCP の道具）・commit の関所（git の pre-commit）・Copilot の関所（VS Code の Copilot と Copilot CLI のフック）です。これから作るのは VS Code 拡張です。
 
 ## 要るもの
 
@@ -61,7 +58,8 @@ workspace/
 2. `mixenc sync` でリポを写し、`mirror/cloneA/compile_commands.json` を書きます。
 3. `mixenc doctor` で、すべきことの一覧が出ます（崩れがあれば終了コード 1）。
 4. エディタやエージェントの clangd を、入口 `mixenc clangd` に向けます（下の節）。入口が起動のたびと動いている間に写すので、手で `mixenc sync` を実行するのは入口を使わない時だけです。
-5. エージェントに正門の MCP の道具を渡し、commit の関所を入れます（`mixenc hooks install`）。
+5. commit の関所を入れます（`mixenc hooks install`）。
+6. Copilot（VS Code と Copilot CLI）には、`mixenc copilot install` でフック・解析エージェント・MCP サーバ・入口を `~/.copilot` に入れます（下の節）。
 
 ## 入口（`mixenc clangd`）
 
@@ -89,6 +87,26 @@ workspace/
 - **Copilot CLI**：`~/.copilot/lsp-config.json` に `"command": "mixenc"` と `"args": ["clangd", "--background-index"]`。
 - **`clangd` を起こすもの全般**：`mixenc.exe` を `clangd.exe` という名前で、本物より `PATH` の前に置くと入口になります（clangd を探す時は自分を飛ばします）。
 
+## 解析の道具（`mixenc mcp`）
+
+`mixenc mcp` は MCP サーバです。解析の道具は clangd に聞き（自分で入口を起こします）、原本のパスで、どのファイルも正しく読んで、短く答えます。
+
+| 道具 | 返すもの |
+|---|---|
+| `find_symbol` | 名前（の一部）で clangd の索引から見つけた記号の種類・修飾名・パス:行 |
+| `definition` | 記号の定義と宣言の場所と、その前後の行 |
+| `references` | 使われている件数と、ファイルごとの行（本文は付けない） |
+| `call_hierarchy` | 関数を呼ぶ側（incoming）か呼ばれる側（outgoing）の木。段の深さと呼んでいる行つき |
+| `type_hierarchy` | 基底クラスと派生クラスの木 |
+| `outline` | ファイルの宣言と行（入れ子） |
+| `read_lines` | ファイルの行を正しく読んで返す（CP932・混在・UTF-16） |
+| `search` | 写しを正規表現で探し、原本のパス:行で返す |
+| `diagnose` | doctor の短い版・clangd の索引の状態。ファイルを渡すと、その文字コード・DB にあるか・clangd のエラー |
+
+場所を聞く道具には記号の名前を渡します。同じ名前の記号が複数ある時だけ、名前が書かれたファイルと行も渡します（列は数えなくてよい）。答えを保証できない時（`compile_commands.json` に無いファイル・clangd が索引を作っている途中・写していないファイル）は、「not vouched for」にそう書きます。
+
+**解析エージェント**（`mixenc-analyst`・`mixenc copilot install` で入る）は、この道具だけを持つ Copilot のカスタムエージェントです。記号を探す → 定義・参照・呼び出し階層・型の階層 → 要る行だけ読む、の順に調べ、文字列・コメント・コンパイルされないファイルの時だけ文字を探します。答えは、結論・根拠（パス:行）・確かめていないこと、の形です。`mixenc copilot intro`（日本語は `--ja`）で、オーケストラの指示に貼る短い紹介文を出します。
+
 ## 正門（`mixenc edit`・`mixenc mcp`）
 
 CP932 のファイルを Unicode を通して読み書きするエディタやエージェントは、頼まれていないバイトまで変えます。`Ⅰ`・`№`・`㈱` には NEC と IBM の 2 つの形があり、違う文字コードで読んだファイルは壊れて戻ります。正門は、エージェントが原本を書くための道です。ファイルの文字を置き換え、そのファイルの文字コードのまま書き戻します。
@@ -99,10 +117,10 @@ CP932 のファイルを Unicode を通して読み書きするエディタや�
 - 写しのパスは原本を指します。置き換える文字はファイルに 1 か所だけある必要があります。改行は `\n` で渡せます。
 - 書く前に、結果が頼まれた文字として読み戻せること・commit の関所の確かめを通ること・読んだ時から原本が変わっていないことを確かめます。書いた後に写しを合わせます。
 
-`mixenc mcp` は、これを VS Code の Copilot と Copilot CLI 向けの MCP の道具 2 つとして出します。`edit`（path・old_string・new_string）と `create`（path・content）です。
+`mixenc mcp` は、これも VS Code の Copilot と Copilot CLI 向けの MCP の道具 2 つとして出します。`edit`（path・old_string・new_string）と `create`（path・content）です。
 
 - **VS Code**：`mcp.json`（MCP: Open User Configuration）に `"servers": { "mixenc": { "type": "stdio", "command": "C:\\Tools\\mixenc.exe", "args": ["mcp"] } }`。
-- **Copilot CLI**：`copilot mcp add mixenc -- mixenc mcp`。
+- **Copilot CLI**：`mixenc copilot install` が登録します（または `copilot mcp add mixenc -- mixenc mcp`）。
 
 コマンドからは `mixenc edit <file> --old <文字> --new <文字>`（`--old-file`・`--new-file`・`--create` もある）で同じことができます。
 
@@ -120,6 +138,30 @@ CP932 のファイルを Unicode を通して読み書きするエディタや�
 - `core.hooksPath` が設定されている時（フックをほかで管理している）は入れません。doctor がそのことを出します。
 - 人が意図した変更は `git commit --no-verify` で通せます。
 
+## Copilot の関所（`mixenc copilot`）
+
+VS Code の Copilot と Copilot CLI は、同じフック（`~/.copilot/hooks/`）を動かします。どちらも自分の道具で CP932 のファイルを UTF-8 として読み、UTF-8 として書き戻します。フックがそれを正します。
+
+| Copilot の道具 | UTF-8 でないファイル | UTF-8・ASCII のファイル | 写し |
+|---|---|---|---|
+| 読む（`view`） | 写しを読ませる（行は同じ） | そのまま | そのまま |
+| 探す（`rg`） | 正しく読んだ一致を、原本のパスで答えに入れる | そのまま | — |
+| 書く（`edit`・`create`・`apply_patch`） | 止めて、mixenc の `edit` の使い方を返す | MSVC が読み違える所への非 ASCII は止める。ほかは通す | 止める |
+| 書いた後・シェルの後 | — | 写しを合わせる | — |
+
+ワークスペースでの会話は、読み方と書き方の案内と doctor の短い版から始まります。ワークスペースの外ではフックは何もしません。フックが時間切れになると道具は通ります。最後の守りは commit の関所です。
+
+`mixenc copilot install`（`COPILOT_HOME`、無ければ `~/.copilot` に入れる。別のフォルダは `--home`）で入るもの:
+
+- `hooks/mixenc.json`：フック。この mixenc を直接起こします（`exec`・シェルを通さない）
+- `agents/mixenc-analyst.agent.md`：解析エージェント
+- `mcp-config.json`：MCP サーバ `mixenc`（ほかのサーバは残す）
+- `lsp-config.json`：Copilot CLI の clangd を入口に向ける（`--no-lsp` で変えない）。前の設定は `uninstall` のために残す
+
+`mixenc copilot uninstall` で全部を外し、clangd の設定を元に戻します。`mixenc copilot status`（と doctor）で入っているものが分かります。Copilot はこれらを起動の時に読みます。preToolUse のフックが起こせないと道具は止められるので、mixenc を消す前に uninstall してください。VS Code の Copilot も同じフォルダのフックとエージェントを読みます。MCP サーバは上の方法で足します。
+
+作った CP932 の見本で Copilot CLI 1.0.105 を使った実測: `view` は `"�\��"` と出していた所を写しから `"表示"` と出し、`rg` は取りこぼしていた行を見つけ、`apply_patch` は止められて、エージェントは mixenc の `edit` に切り替え、CP932 の 1 行だけを書いてほかを保ちました。解析エージェントは、記号から呼ぶ側・呼ばれる側まで原本のパスで答えました。
+
 ## コマンド
 
 | コマンド | すること |
@@ -130,14 +172,18 @@ CP932 のファイルを Unicode を通して読み書きするエディタや�
 | `mixenc judge <file>...` | ファイルの判定を出す |
 | `mixenc clangd [args]...` | 入口（引数は全部 clangd に渡す） |
 | `mixenc edit <file> --old <文字> --new <文字> [--encoding E]` | 正門：文字コードを保って置き換える（`--create` で新しいファイル） |
-| `mixenc mcp` | 正門の道具を MCP サーバとして出す（標準入出力） |
+| `mixenc mcp` | 解析の道具と正門の道具を MCP サーバとして出す（標準入出力） |
 | `mixenc hooks install\|uninstall\|status [--repo <名前>]` | 各リポの commit の関所 |
 | `mixenc hooks pre-commit` | ステージしたファイルを確かめる（pre-commit が呼ぶ） |
+| `mixenc copilot install\|uninstall\|status [--home <dir>]` | Copilot のフック・解析エージェント・MCP サーバ・入口を `~/.copilot` に |
+| `mixenc copilot intro [--ja]` | 解析エージェントをオーケストラに紹介する文 |
+| `mixenc copilot hook <event>` | フックの 1 回分に答える（Copilot が呼ぶ） |
 
 共通のオプションは `-C <dir>`（`git -C` と同じ）と `--json` です。終了コードは次のとおりです。
 - `0`：問題なし
-- `1`：すべきことがある（`sync` は写せないファイルがあった時、`doctor` は崩れがある時、`hooks` は `core.hooksPath` で入れなかった時、`hooks pre-commit` は commit を止めた時）
+- `1`：すべきことがある（`sync` は写せないファイルがあった時、`doctor` は崩れがある時、`hooks` は `core.hooksPath` で入れなかった時、`hooks pre-commit` は commit を止めた時、`copilot status` は入っていないものがある時）
 - `2`：エラー
+- `copilot hook` は常に `0`
 
 ## `mixenc.json`
 

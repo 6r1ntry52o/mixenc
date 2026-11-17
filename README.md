@@ -33,10 +33,11 @@ and agents keep working on the originals, in their own encodings.
 - **Nothing leaves your machine.** No telemetry, no network access. The doctor's report has paths
   in it; it stays where it is made.
 
-**Status: stage 3 of 5.** This version judges, mirrors, writes the mirror database, runs the
-short doctor, has the clangd entry (`mixenc clangd`), the front gate (`mixenc edit` and the MCP
-tools that write originals in their own encoding) and the commit gate (a git pre-commit). Still
-to come: the analysis tools and agent, the Copilot hooks, and the VS Code extension.
+**Status: stage 4 of 5.** This version judges, mirrors, writes the mirror database, runs the
+short doctor, has the clangd entry (`mixenc clangd`), the analysis tools (clangd's answers through
+MCP) and an analysis agent, the front gate (`mixenc edit` and the MCP tools that write originals in
+their own encoding), the commit gate (a git pre-commit) and Copilot's gate (hooks for VS Code's
+Copilot and Copilot CLI). Still to come: the VS Code extension.
 
 ## Requirements
 
@@ -68,7 +69,9 @@ workspace/
 3. `mixenc doctor` lists what needs doing (exit code 1 when something is broken).
 4. Point your editor's or agent's clangd at the entry, `mixenc clangd` (below). It syncs at every
    start and while it runs, so `mixenc sync` by hand is only needed without it.
-5. Give agents the front gate's MCP tools, and install the commit gate: `mixenc hooks install`.
+5. Install the commit gate: `mixenc hooks install`.
+6. For Copilot (VS Code and Copilot CLI): `mixenc copilot install` puts the hooks, the analysis agent,
+   the MCP server and the entry under `~/.copilot` (below).
 
 ## The clangd entry
 
@@ -101,6 +104,35 @@ files misread as UTF-8 (measured); the entry replaces them.
 - **Anything that runs `clangd`**: a copy of `mixenc.exe` named `clangd.exe`, earlier on `PATH` than
   the real one, is the entry (it skips itself when it looks for clangd).
 
+## The analysis tools (`mixenc mcp`)
+
+`mixenc mcp` is an MCP server. Its analysis tools ask clangd (through the entry, which it starts)
+and answer short, with the originals' paths and every file read right:
+
+| Tool | Answers |
+|---|---|
+| `find_symbol` | kind, qualified name and path:line of the symbols a name (or part of one) finds in clangd's index |
+| `definition` | where a symbol is defined and declared, with the lines around |
+| `references` | how many uses, and their lines per file (no text) |
+| `call_hierarchy` | who calls a function (incoming) or what it calls (outgoing), as a tree, levels deep, with the lines of the calls |
+| `type_hierarchy` | base and derived classes, as trees |
+| `outline` | a file's declarations and their lines, nested |
+| `read_lines` | lines of a file, decoded right (CP932, mixed, UTF-16) |
+| `search` | a regular expression over the mirrors, answered with the originals' path:line |
+| `diagnose` | the doctor's short report, clangd's index, and for a file: its encoding, whether it is in the database, clangd's errors |
+
+A question about a place takes the symbol's name, and the file and line where it is written when the
+name stands for several symbols; nobody counts columns. A tool that cannot vouch for its answer (the
+file is not in `compile_commands.json`, clangd is still indexing, the file is not mirrored) says so
+under "not vouched for".
+
+**The analysis agent** (`mixenc-analyst`, installed by `mixenc copilot install`) is a Copilot custom
+agent that has only these tools. It works in order: find the symbol, then definitions, references
+and call and type hierarchies, then read only the lines it needs; it searches text only for strings,
+comments and files clangd does not compile. It answers with a conclusion, the evidence as path:line,
+and what it did not check. `mixenc copilot intro` (`--ja` in Japanese) prints a short text to put in
+an orchestrator's instructions so that it hands such questions to the agent.
+
 ## The front gate (`mixenc edit`, `mixenc mcp`)
 
 An editor or an agent that reads a CP932 file through Unicode and writes it back changes bytes it
@@ -122,12 +154,12 @@ text in a file and writes the file back in its own encoding.
 - Before anything is written, the result must read back as the text asked for and pass the commit
   gate's check, and the original must be as it was when it was read. The mirror follows.
 
-`mixenc mcp` serves this as two MCP tools, `edit` (path, old_string, new_string) and `create`
+`mixenc mcp` serves this as two more MCP tools, `edit` (path, old_string, new_string) and `create`
 (path, content), for VS Code's Copilot and Copilot CLI:
 
 - **VS Code**: in `mcp.json` (MCP: Open User Configuration),
   `"servers": { "mixenc": { "type": "stdio", "command": "C:\\Tools\\mixenc.exe", "args": ["mcp"] } }`.
-- **Copilot CLI**: `copilot mcp add mixenc -- mixenc mcp`.
+- **Copilot CLI**: `mixenc copilot install` registers it (or `copilot mcp add mixenc -- mixenc mcp`).
 
 `mixenc edit <file> --old <text> --new <text>` (or `--old-file`/`--new-file`, `--create`) does the
 same from the command line.
@@ -153,6 +185,40 @@ push `.git/hooks`):
   says so.
 - `git commit --no-verify` skips the gate when a person means the change.
 
+## Copilot's gate (`mixenc copilot`)
+
+VS Code's Copilot and Copilot CLI run the same hooks (`~/.copilot/hooks/`). Their own tools read a
+CP932 file as UTF-8 and write it back as UTF-8; the hooks put them right:
+
+| Copilot's tool | A file that is not UTF-8 | A UTF-8 or ASCII file | A mirror |
+|---|---|---|---|
+| read (`view`) | reads the mirror instead (same lines) | as it is | as it is |
+| search (`rg`) | the answer gets the matches read right, named by the original | as it is | — |
+| write (`edit`, `create`, `apply_patch`) | denied, with the way to mixenc's `edit` | non-ASCII text where MSVC would misread it is denied; the rest goes through | denied |
+| after a write or a shell command | — | the mirror is synced | — |
+
+A session in a workspace starts with how to read and write there and the doctor's short report.
+Outside a workspace the hooks say nothing. A hook that times out lets the tool through: the commit
+gate is the last line.
+
+`mixenc copilot install` (into `COPILOT_HOME`, else `~/.copilot`; `--home` for another folder):
+
+- `hooks/mixenc.json`: the hooks, running this mixenc (`exec`, no shell).
+- `agents/mixenc-analyst.agent.md`: the analysis agent.
+- `mcp-config.json`: the MCP server `mixenc` (other servers are kept).
+- `lsp-config.json`: Copilot CLI's clangd through the entry (`--no-lsp` leaves it); the entry
+  before is kept for `uninstall`.
+
+`mixenc copilot uninstall` takes all of it out and puts clangd back; `mixenc copilot status` (and
+the doctor) shows what is there. Copilot reads these when it starts. A preToolUse hook that cannot
+run denies the tool, so uninstall before you remove mixenc. VS Code's Copilot reads the hooks and
+the agent from the same folder; add the MCP server there as above.
+
+Measured with Copilot CLI 1.0.105 on a made-up CP932 sample: `view` showed `"表示"` from the mirror
+where it had shown `"�\��"`, `rg` found the lines it had missed, `apply_patch` was denied and the
+agent turned to mixenc's `edit`, which wrote one CP932 line and kept the rest; the analysis agent
+answered from a symbol to its callers and callees with the originals' paths.
+
 ## Commands
 
 | Command | What it does |
@@ -163,13 +229,17 @@ push `.git/hooks`):
 | `mixenc judge <file>...` | Print the judgement of files |
 | `mixenc clangd [args]...` | The clangd entry (every argument goes on to clangd) |
 | `mixenc edit <file> --old <text> --new <text> [--encoding E]` | The front gate: replace text, keeping the file's encoding (`--create` writes a new file) |
-| `mixenc mcp` | The front gate's tools as an MCP server on stdin and stdout |
+| `mixenc mcp` | The analysis tools and the front gate's tools as an MCP server on stdin and stdout |
 | `mixenc hooks install\|uninstall\|status [--repo <name>]` | The commit gate in each repository |
 | `mixenc hooks pre-commit` | Check the staged files (what the pre-commit runs) |
+| `mixenc copilot install\|uninstall\|status [--home <dir>]` | Copilot's hooks, the analysis agent, the MCP server and the entry under `~/.copilot` |
+| `mixenc copilot intro [--ja]` | The text that introduces the analysis agent to an orchestrator |
+| `mixenc copilot hook <event>` | Answer one hook event (Copilot runs this) |
 
 Common options: `-C <dir>` (as `git -C`), `--json`. Exit codes: `0` fine, `1` something to do
 (`sync`: a file could not be mirrored; `doctor`: something is broken; `hooks`: not installed
-because of `core.hooksPath`; `hooks pre-commit`: the commit is stopped), `2` an error.
+because of `core.hooksPath`; `hooks pre-commit`: the commit is stopped; `copilot status`: something
+is not installed), `2` an error. `copilot hook` always exits `0`.
 
 ## `mixenc.json`
 

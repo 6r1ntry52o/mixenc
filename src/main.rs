@@ -8,7 +8,7 @@ use serde_json::json;
 use mixenc::config::{self, Workspace};
 use mixenc::index::Problem;
 use mixenc::mirror::Outcome;
-use mixenc::{convert, doctor, edit, hooks, judge, mcp, paths, sync};
+use mixenc::{convert, copilot, doctor, edit, hooks, judge, mcp, paths, sync};
 
 #[derive(Parser)]
 #[command(
@@ -85,12 +85,53 @@ enum Command {
         #[arg(long)]
         encoding: Option<String>,
     },
-    /// Serve the front gate's tools (edit, create) as an MCP server on stdin and stdout
+    /// Serve the analysis tools (clangd's answers, files read right) and the front gate's tools
+    /// (edit, create) as an MCP server on stdin and stdout
     Mcp,
     /// The commit gate: a git pre-commit in each repository of the workspace
     Hooks {
         #[command(subcommand)]
         command: HooksCommand,
+    },
+    /// Copilot's gate (hooks), the analysis agent, and mixenc's MCP server and entry for Copilot
+    Copilot {
+        #[command(subcommand)]
+        command: CopilotCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum CopilotCommand {
+    /// Put the hooks, the analysis agent, the MCP server and the entry (as clangd) under
+    /// ~/.copilot (COPILOT_HOME); settings of other tools there are kept
+    Install {
+        /// Copilot's folder (default: COPILOT_HOME, else ~/.copilot)
+        #[arg(long, value_name = "DIR")]
+        home: Option<PathBuf>,
+        /// Leave Copilot CLI's clangd as it is
+        #[arg(long)]
+        no_lsp: bool,
+    },
+    /// Take out what install put in (clangd goes back to what it was)
+    Uninstall {
+        #[arg(long, value_name = "DIR")]
+        home: Option<PathBuf>,
+    },
+    /// Show what is installed
+    Status {
+        #[arg(long, value_name = "DIR")]
+        home: Option<PathBuf>,
+    },
+    /// Print the text for an orchestrator's instructions that introduces the analysis agent
+    Intro {
+        /// In Japanese
+        #[arg(long)]
+        ja: bool,
+    },
+    /// Answer one hook event (Copilot runs this; the event comes on stdin)
+    Hook {
+        /// sessionStart, preToolUse or postToolUse
+        event: String,
     },
 }
 
@@ -220,6 +261,7 @@ fn run(cli: &Cli) -> Result<u8> {
             Ok(0)
         }
         Command::Hooks { command } => run_hooks(cli, &dir, command),
+        Command::Copilot { command } => run_copilot(cli, command),
         Command::Judge { files } => {
             let mut out = Vec::new();
             for file in files {
@@ -260,6 +302,62 @@ fn text_arg(text: &Option<String>, file: &Option<PathBuf>) -> Result<Option<Stri
         }
         (None, None) => Ok(None),
     }
+}
+
+fn run_copilot(cli: &Cli, command: &CopilotCommand) -> Result<u8> {
+    let home_of = |h: &Option<PathBuf>| h.clone().unwrap_or_else(copilot::home);
+    let done = match command {
+        CopilotCommand::Hook { event } => {
+            // Whatever happens, the hook exits 0: a failing preToolUse hook denies every tool.
+            let mut input = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut input);
+            let answer = std::panic::catch_unwind(|| copilot::hook(event, &input)).ok().flatten();
+            if let Some(answer) = answer {
+                println!("{answer}");
+            }
+            return Ok(0);
+        }
+        CopilotCommand::Intro { ja } => {
+            print!("{}", if *ja { copilot::INTRO_JA } else { copilot::INTRO });
+            return Ok(0);
+        }
+        CopilotCommand::Status { home } => {
+            let pieces = copilot::status(&home_of(home));
+            if cli.json {
+                let list: Vec<_> = pieces
+                    .iter()
+                    .map(|p| json!({ "name": p.name, "path": paths::display(&p.path), "ok": p.ok, "status": p.text }))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&json!({ "pieces": list }))?);
+            } else {
+                for p in &pieces {
+                    println!("{}: {} ({})", p.name, p.text, paths::display(&p.path));
+                }
+            }
+            return Ok(u8::from(!pieces.iter().all(|p| p.ok)));
+        }
+        CopilotCommand::Install { home, no_lsp } => {
+            copilot::install(&home_of(home), &std::env::current_exe()?, !no_lsp)?
+        }
+        CopilotCommand::Uninstall { home } => copilot::uninstall(&home_of(home))?,
+    };
+    if cli.json {
+        println!("{}", serde_json::to_string_pretty(&json!({ "done": done }))?);
+    } else {
+        for line in &done {
+            println!("{line}");
+        }
+        if done.is_empty() {
+            println!("nothing to do");
+        }
+        if matches!(command, CopilotCommand::Install { .. }) {
+            println!(
+                "Copilot reads these when it starts. VS Code's Copilot reads the hooks and the agent too; add the MCP server there with:\n  code --add-mcp \"{{\\\"name\\\":\\\"mixenc\\\",\\\"command\\\":\\\"{}\\\",\\\"args\\\":[\\\"mcp\\\"]}}\"",
+                paths::forward(&std::env::current_exe()?.to_string_lossy())
+            );
+        }
+    }
+    Ok(0)
 }
 
 fn run_hooks(cli: &Cli, dir: &std::path::Path, command: &HooksCommand) -> Result<u8> {

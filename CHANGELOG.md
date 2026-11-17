@@ -34,6 +34,20 @@ others to read (`mixenc.json`, `repo.json`, the doctor's `--json` report) carry 
   other bytes (`Ⅰ` in NEC's form instead of IBM's, CRLF to LF), a mixed or broken file got worse,
   or non-ASCII text came into a file in a form MSVC misreads. A pre-commit already there runs
   first; with `core.hooksPath` set nothing is installed. The doctor says whether it is installed.
+- Stage 4: the analysis tools in `mixenc mcp` (`find_symbol`, `definition`, `references`,
+  `call_hierarchy`, `type_hierarchy`, `outline`, `read_lines`, `search`, `diagnose`): clangd's
+  answers through the entry, short, with the originals' paths and the files read right; a place
+  is a symbol's name (with file and line when the name stands for several); what an answer cannot
+  vouch for (not in the database, still indexing, not mirrored) is said with it.
+- Stage 4: the analysis agent `mixenc-analyst` (a Copilot custom agent with only those tools) and
+  its introduction for an orchestrator, `mixenc copilot intro [--ja]`.
+- Stage 4: Copilot's gate, `mixenc copilot hook`: reads of a file that is not UTF-8 go to its
+  mirror, grep's answers get the lines it read wrong read right, built-in writes to such a file or
+  to a mirror (and non-ASCII text MSVC would misread) are denied with the way to the front gate,
+  the mirror follows writes and shell commands, and a session starts with how to read and write
+  and the doctor's short report. `mixenc copilot install|uninstall|status` puts the hooks, the
+  agent, the MCP server and the entry (as Copilot CLI's clangd) under `~/.copilot`, keeping other
+  settings; the doctor says whether they are there.
 
 ### Fixed
 

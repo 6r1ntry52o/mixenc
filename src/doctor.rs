@@ -93,6 +93,7 @@ pub fn run(ws: &Workspace) -> Report {
         long_paths += check_repo(&mut d, &repo);
     }
     d.repo = None;
+    check_copilot(&mut d);
     check_overrides(&mut d);
     check_long_path_setting(&mut d, long_paths);
 
@@ -167,6 +168,43 @@ fn check_commit_gate(d: &mut Doctor, repo: &RepoPaths) {
             None,
             Vec::new(),
         ),
+    }
+}
+
+/// Copilot's gate and the analysis agent (per user, under `~/.copilot`).
+fn check_copilot(d: &mut Doctor) {
+    let pieces = crate::copilot::status(&crate::copilot::home());
+    let hooks = pieces.iter().find(|p| p.name == "hooks");
+    if let Some(p) = hooks.filter(|p| !p.ok && p.text.contains("is gone")) {
+        d.add(
+            Severity::Broken,
+            "copilot",
+            format!("Copilot's hooks: {}", p.text),
+            Some("mixenc copilot install"),
+            Vec::new(),
+        );
+        return;
+    }
+    let missing: Vec<&str> = pieces.iter().filter(|p| !p.ok && p.name != "lsp").map(|p| p.name).collect();
+    if missing.is_empty() {
+        d.add(
+            Severity::Ok,
+            "copilot",
+            "Copilot's hooks, the analysis agent and the MCP server are installed".into(),
+            None,
+            Vec::new(),
+        );
+    } else {
+        d.add(
+            Severity::Notice,
+            "copilot",
+            format!(
+                "for Copilot, not installed: {} (without the hooks, Copilot's own tools read CP932 wrong and can write it)",
+                missing.join(", ")
+            ),
+            Some("mixenc copilot install"),
+            Vec::new(),
+        );
     }
 }
 
