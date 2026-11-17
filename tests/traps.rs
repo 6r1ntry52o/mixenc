@@ -62,9 +62,12 @@ impl Fixture {
 
 fn fixture() -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
-    let ws = tmp.path().join("ws");
+    // The long spelling of the temporary folder (on GitHub's runners it is under RUNNER~1), which
+    // is what mixenc reports.
+    let base = mixenc::paths::canonical(tmp.path());
+    let ws = base.join("ws");
     let repo = ws.join("repos").join("cloneA");
-    let ext = tmp.path().join("vendor").join("include");
+    let ext = base.join("vendor").join("include");
     fs::create_dir_all(&repo).unwrap();
 
     // The 0x5C trap: comments ending in 表 (95 5C), 能 (94 5C) and ソ (83 5C), each before a declaration.

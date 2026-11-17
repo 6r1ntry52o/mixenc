@@ -57,7 +57,7 @@ impl Mapper {
     pub fn new(roots: &[Root]) -> Mapper {
         let mut roots: Vec<(String, String)> = roots
             .iter()
-            .map(|r| (paths::normalize(&r.source.to_string_lossy()), paths::normalize(&r.mirror.to_string_lossy())))
+            .map(|r| (paths::long_form(&r.source.to_string_lossy()), paths::long_form(&r.mirror.to_string_lossy())))
             .collect();
         roots.sort_by_key(|(source, _)| std::cmp::Reverse(source.len()));
         Mapper { roots }
