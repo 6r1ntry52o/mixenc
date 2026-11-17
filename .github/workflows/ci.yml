@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, tests
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        # The samples include a path of about 950 characters.
+        run: |
+          git config --global core.longpaths true
+          cargo test --locked --no-fail-fast
+
+  msrv:
+    name: minimum Rust version
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust 1.89
+        run: |
+          rustup toolchain install 1.89 --profile minimal --no-self-update
+          rustup default 1.89
+      - run: cargo check --locked
