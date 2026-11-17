@@ -1,0 +1,117 @@
+# mixenc
+
+[English](README.md) | 日本語
+
+Shift_JIS（CP932）・UTF-8 などの文字コードがファイルごと・行ごとに混ざった C/C++ のリポを、clangd と AI エージェントが読み違えず、取りこぼさずに読めるようにします。
+
+clangd はソースを UTF-8 として読みます。CP932 では「表」「能」「ソ」などの 2 バイト目が `0x5C`（ASCII の `\`）なので、これで終わるコメントは UTF-8 で読むと行の継続になり、次の行（宣言のことが多い）が消えます。
+
+```cpp
+// 表示する設定の表        <- 95 5C で終わる: UTF-8 で読むと "\"
+int hidden(int);          <- コメントに飲まれる。clangd:「宣言が無い」
+```
+
+mixenc はリポの**写し**を UTF-8 でリポの外に作ります（行と改行は原本と同じ）。あわせて**写しの DB**（写しを指す `compile_commands.json`）も作ります。clangd は写しを読み（`--compile-commands-dir`）、`--path-mappings` が答えのパスを原本に戻します。エディタとエージェントは、元の文字コードのまま原本で作業を続けられます。
+
+- **ファイルごとに判定は 1 つ。** 対象は次のとおりです。
+  - BOM、BOM の有無を問わない UTF-16、ISO-2022-JP
+  - CP932（MSVC と同じく 2 バイトを 1 組で読む）、UTF-8、EUC-JP
+  - UTF-8 と CP932 の行の混在、壊れたバイト
+
+  2 つの読み方が両方成り立つファイルは、推測せず一覧に出します。
+- **書く前に確かめる。** 写しは厳密な UTF-8 で、原本と行が 1 対 1 でなければなりません。行末の `\` は、原本の行末が本物の `\` の時だけ許します。満たさないファイルは写さず一覧に出すので、clangd が間違った写しを読むことはありません。
+- **注意ではなく機械で守る。** `mixenc doctor` は、何も変えずに次を確かめます。
+  - 写しが index どおりか（手で変えられていない・原本より古くない）
+  - 判定
+  - 写しの DB（原本へのパスも文字コードの引数も残っていない）
+  - ツールチェーンのヘッダ
+  - 長いパス
+- **長いパス。** 約 950 文字のパスでも動きます。clangd が索引を保存できない長い名前（235 文字以上）は、doctor が一覧に出します。
+- **何も外に出さない。** テレメトリも通信もありません。doctor の出力にはパスが入るので、作った PC の中に置いておきます。
+
+**状態: 5 段のうち段 1。** この版でできるのは、判定・写す・写しの DB・doctor の短い版です。これから作るものは次のとおりです。
+- 入口（`mixenc clangd`）：写しで clangd を起こし、エディタが送るものを差し替える
+- MCP の道具：解析と、原本を元の文字コードで書く道
+- Copilot のフックと、git の pre-commit の関所
+- VS Code 拡張
+
+## 要るもの
+
+- Windows 10 か 11（CP932 は Windows の表で読みます）
+- git
+- リポの `compile_commands.json`。Visual Studio のソリューションなら [lazymsbuild](https://github.com/6r1ntry52o/lazymsbuild) が保ちます。mixenc は `lazymsbuild path` でその場所を見つけます
+- 結果を使う clangd
+
+## 入れ方
+
+今はソースから入れます。`cargo install --git https://github.com/6r1ntry52o/mixenc`（Rust 1.89 以上）を実行してください。exe 付きのリリースは後で出します。
+
+## 始め方
+
+**ワークスペース**は `mixenc.json` を置くフォルダです。写しはその `mirror` フォルダに作ります。
+
+```text
+workspace/
+├─ repos/cloneA/            リポ（原本。人もエージェントもここを直す）
+├─ mirror/cloneA/           写し・写しの DB・clangd の索引
+├─ mirror/_ext/<名前>/      リポの外の include の写し
+└─ mixenc.json
+```
+
+1. ワークスペースで `mixenc init --repo repos/cloneA` を実行すると、`mixenc.json` ができます。
+2. `mixenc sync` でリポを写し、`mirror/cloneA/compile_commands.json` を書きます。
+3. `mixenc doctor` で、すべきことの一覧が出ます（崩れがあれば終了コード 1）。
+4. clangd は次の 2 つを付けて起こします（次の段の入口 `mixenc clangd` が代わりに行います）。
+   - `--compile-commands-dir=<workspace>\mirror\cloneA`
+   - `--path-mappings`：値は `mirror\cloneA\.mixenc\repo.json` の `path_mappings`
+
+変えた後は、もう一度 `mixenc sync` を実行します。大きさか更新日時が変わったファイルだけを読みます。
+
+## コマンド
+
+| コマンド | すること |
+|---|---|
+| `mixenc init --repo <dir>... [--wiki <dir>]` | 今のフォルダに `mixenc.json` を書く |
+| `mixenc sync [--repo <名前>]` | リポとリポの外の include を写し、写しの DB を書く |
+| `mixenc doctor [--limit N]` | 全部を確かめる（何も変えない） |
+| `mixenc judge <file>...` | ファイルの判定を出す |
+
+共通のオプションは `-C <dir>`（`git -C` と同じ）と `--json` です。終了コードは次のとおりです。
+- `0`：問題なし
+- `1`：すべきことがある（`sync` は写せないファイルがあった時、`doctor` は崩れがある時）
+- `2`：エラー
+
+## `mixenc.json`
+
+形は [README.md](README.md#mixencjson) を見てください。
+
+- `repos[].path` はワークスペースからの相対パスか絶対パスです。次の 3 つは省けます。
+  - `name`：写しのフォルダ名（既定はフォルダの名前）
+  - `wiki`：ドキュメント
+  - `db`：`compile_commands.json` のファイルかそのフォルダ（既定は lazymsbuild のもの、無ければリポの根）
+- `external` には、DB が指す場所のほかに写す、リポの外の include フォルダを書きます。
+- `overrides` は上書き表です。判定が決められなかった（または間違えた）ファイルについて、人が決めたことを書きます。読む文字コードか `skip` を指定し、`judged` にその時の判定を残します。判定が変わると doctor が一覧に出します。
+
+## 判定
+
+| 判定 | 写すか | 補足 |
+|---|---|---|
+| `ascii`・`utf8`・`utf8-bom`・`cp932` | 写す | |
+| `utf16le`・`utf16be` | 写す | BOM あり |
+| `utf16le-nobom`・`utf16be-nobom` | 写す | 一覧に出す（MSVC は BOM が要る） |
+| `euc-jp`・`iso-2022-jp` | 写す | 一覧に出す |
+| `mixed` | 行ごとに写す | UTF-8 と CP932 の行が 1 つのファイルにある。一覧に出す（エディタが読み違える） |
+| `broken` | 写す（どの文字コードでも読めない所は U+FFFD） | 一覧に出す |
+| `ambiguous-utf8-cp932` | UTF-8 で写す | 一覧に出す。厳密な UTF-8 には `0x5C` の罠が入り得ない |
+| `ambiguous-cp932-euc-jp` | 写さない | 上書き表で決まるまで待つ |
+| `binary` | 写さない | UTF-16 でない NUL を含む |
+
+順番と決まりは [`src/judge.rs`](src/judge.rs) にあります。
+
+## `--path-mappings` の注意
+
+`--path-mappings` は根ごとに、ドライブ文字が大文字の組と小文字の組の 2 つを並べます。clangd はドライブ文字の大小を区別し、VS Code は `c:`、DB は `C:` を使うためです。大文字の組だけだと、エディタで開いたファイルが写しに替わらず、隣のヘッダの原本を読みます（clangd 23 で実測）。
+
+## ライセンス
+
+[Apache License 2.0](LICENSE-APACHE) か [MIT](LICENSE-MIT) のどちらかを選べます。
