@@ -175,15 +175,32 @@ pub fn sync_repo(ws: &Workspace, repo: &RepoPaths) -> Result<RepoSync> {
         && file.is_file()
     {
         let (mut mirror_entries, problems) = db::rewrite(&entries, &mapper);
-        // The database may spell a path in another case than the disk; clangd finds an entry by the
-        // path the editor's (disk-cased) path maps to.
+        // The database may spell a path in another case than the disk; the editor sends the disk's,
+        // and clangd looks the entry up by the path that maps to. Folders are looked up once.
+        let mut folders: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut on_disk = |dir: &str| -> String {
+            folders
+                .entry(paths::key(dir))
+                .or_insert_with(|| {
+                    if Path::new(dir).is_dir() {
+                        paths::display(&paths::canonical(Path::new(dir)))
+                    } else {
+                        dir.to_string()
+                    }
+                })
+                .clone()
+        };
         for e in &mut mirror_entries {
-            let file = paths::absolute(&e.directory, &e.file);
-            if Path::new(&file).is_file() && paths::is_absolute(&e.file) {
-                e.file = paths::display(&paths::canonical(Path::new(&file)));
-            }
-            if Path::new(&e.directory).is_dir() {
-                e.directory = paths::display(&paths::canonical(Path::new(&e.directory)));
+            e.directory = on_disk(&e.directory);
+            if paths::is_absolute(&e.file) {
+                let file = paths::normalize(&e.file);
+                if let Some((dir, name)) = file.rsplit_once('\\')
+                    && Path::new(&file).is_file()
+                {
+                    let dir = on_disk(dir);
+                    let name = paths::disk_name(Path::new(&file)).unwrap_or_else(|| name.to_string());
+                    e.file = format!("{dir}\\{name}");
+                }
             }
         }
         state.db_problems.extend(problems);

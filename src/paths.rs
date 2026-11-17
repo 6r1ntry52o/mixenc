@@ -99,19 +99,63 @@ pub fn strip_verbatim(p: &str) -> &str {
     p.strip_prefix("\\\\?\\").unwrap_or(p)
 }
 
-/// The path as the disk spells it (the case of every part), when it exists; else normalized.
-/// Editors send paths in this case, and clangd's `--path-mappings` match it exactly.
+/// The path as the disk spells it: 8.3 short names (`RUNNER~1`) written in full and every part in
+/// the disk's case. Links, junctions and `subst` drives are not followed: editors send paths
+/// through them, and clangd's `--path-mappings` match the path as sent. The part that does not
+/// exist yet is kept as written.
 pub fn canonical(p: &Path) -> PathBuf {
-    match std::fs::canonicalize(p) {
-        Ok(c) => {
-            let s = c.to_string_lossy();
-            match s.strip_prefix("\\\\?\\UNC\\") {
-                Some(unc) => PathBuf::from(format!("\\\\{unc}")),
-                None => PathBuf::from(strip_verbatim(&s)),
+    let normalized = PathBuf::from(normalize(&p.to_string_lossy()));
+    let mut base = normalized.clone();
+    let mut rest = Vec::new();
+    loop {
+        if let Some(long) = crate::win::long_path_name(&base) {
+            // GetLongPathNameW writes short names in full but keeps the case of long ones.
+            let mut out = disk_case(Path::new(&normalize(&long.to_string_lossy())));
+            for part in rest.iter().rev() {
+                out.push(part);
             }
+            return out;
         }
-        Err(_) => PathBuf::from(normalize(&p.to_string_lossy())),
+        match (base.file_name().map(|n| n.to_os_string()), base.parent().map(Path::to_path_buf)) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                base = parent;
+            }
+            _ => return normalized,
+        }
     }
+}
+
+/// The name of an existing file as its directory lists it.
+pub fn disk_name(path: &Path) -> Option<String> {
+    crate::win::find_name(path).map(|n| n.to_string_lossy().into_owned())
+}
+
+/// An existing path with every part as the directory lists it (one lookup per part).
+fn disk_case(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(name) => {
+                let real = crate::win::find_name(&out.join(name)).unwrap_or_else(|| name.to_os_string());
+                out.push(real);
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// `p` normalized, with 8.3 short names written in full when it has any (only a path with `~` can).
+/// Two spellings of one folder then compare equal.
+pub fn long_form(p: &str) -> String {
+    if p.contains('~') { display(&canonical(Path::new(p))) } else { normalize(p) }
+}
+
+/// `p` with 8.3 short names where the volume has them (for tests that need such a path).
+pub fn short_form(p: &Path) -> PathBuf {
+    crate::win::short_path_name(p)
+        .map_or_else(|| p.to_path_buf(), |s| PathBuf::from(strip_verbatim(&s.to_string_lossy())))
 }
 
 /// A path as a plain string (no `\\?\`), for files mixenc writes and for messages.
@@ -175,6 +219,19 @@ mod tests {
         assert_eq!(rest_under(r"C:\repo", r"C:\Repo"), Some(String::new()));
         assert_eq!(rest_under(r"C:\repo2\a", r"C:\repo"), None);
         assert!(is_under(r"C:\ws\repos\表示\a.h", r"C:\ws\repos"));
+    }
+
+    #[test]
+    fn canonical_spells_as_the_disk_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("Case Dir With A Long Name");
+        std::fs::create_dir(&real).unwrap();
+        let typed = dir.path().join("case dir with a long name").join("not yet");
+        assert_eq!(canonical(&typed), canonical(&real).join("not yet"));
+        assert!(canonical(&typed).to_string_lossy().contains("Case Dir With A Long Name"));
+        // Where the volume makes 8.3 names, the short spelling comes back long.
+        let short = short_form(&real).display().to_string();
+        assert_eq!(long_form(&short), display(&canonical(&real)), "{short}");
     }
 
     #[test]

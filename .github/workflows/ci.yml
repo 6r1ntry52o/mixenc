@@ -16,7 +16,7 @@ jobs:
     name: fmt, clippy, tests
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rust toolchain
         run: |
@@ -42,7 +42,7 @@ jobs:
     name: minimum Rust version
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Rust 1.89
         run: |
           rustup toolchain install 1.89 --profile minimal --no-self-update

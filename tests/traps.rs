@@ -124,17 +124,21 @@ fn fixture() -> Fixture {
     // An include folder outside the repository, in CP932.
     write(&ext.join("ext_hidden.h"), &sjis("// 表\r\nint ext_hidden();\r\n"));
 
-    let src = repo.join("src");
+    // The database names the folders by their 8.3 short names where the volume has them (as on
+    // GitHub's runners, whose temporary folder is under RUNNER~1); mixenc must still see them as
+    // the repository's.
+    let short = |p: &Path| mixenc::paths::short_form(p).display().to_string();
+    let src = mixenc::paths::short_form(&repo.join("src"));
     let entry = |file: &str| {
         serde_json::json!({
             "directory": src.display().to_string(),
             "file": src.join(file).display().to_string(),
             "arguments": [
-                "C:\\VS\\cl.exe", "/c",
+                r"C:\VS\cl.exe", "/c",
                 format!("/I{}", src.display()),
-                "/I", ext.display().to_string(),
-                format!("/I{}", repo.join("out").display()),
-                format!("/I{}", repo.join("not_built_yet").display()),
+                "/I", short(&ext),
+                format!("/I{}", short(&repo.join("out"))),
+                format!(r"/I{}\not_built_yet", short(&repo)),
                 "/source-charset:shift_jis", "/execution-charset:shift_jis",
                 "@main.rsp",
                 file,

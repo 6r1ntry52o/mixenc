@@ -65,13 +65,16 @@ impl Mapper {
 
     /// The index of the root `abs` is in.
     pub fn root_of(&self, abs: &str) -> Option<usize> {
-        self.roots.iter().position(|(source, _)| paths::is_under(abs, source))
+        let abs = paths::long_form(abs);
+        self.roots.iter().position(|(source, _)| paths::is_under(&abs, source))
     }
 
     /// `abs` moved to its mirror, if it is in a root.
     pub fn map(&self, abs: &str) -> Option<String> {
+        // A database may name a folder by its 8.3 short name (RUNNER~1); the roots have long names.
+        let abs = paths::long_form(abs);
         self.roots.iter().find_map(|(source, mirror)| {
-            paths::rest_under(abs, source)
+            paths::rest_under(&abs, source)
                 .map(|rest| if rest.is_empty() { mirror.clone() } else { format!("{mirror}\\{rest}") })
         })
     }
@@ -346,13 +349,13 @@ pub fn analyze(entries: &[Entry], repo: &Path) -> Analysis {
     let mut include_dirs = BTreeSet::new();
     let mut files = BTreeSet::new();
     for e in entries {
-        let directory = paths::normalize(&e.directory);
-        files.insert(paths::absolute(&directory, &e.file));
+        let directory = paths::long_form(&e.directory);
+        files.insert(paths::long_form(&paths::absolute(&directory, &e.file)));
         let mut ignored = Vec::new();
         let args = expand_response_files(&e.arguments, &directory, &mut ignored);
         for arg in parse(&args) {
             if let Arg::Path { option: Some(option), value, .. } = arg {
-                let abs = paths::absolute(&directory, value);
+                let abs = paths::long_form(&paths::absolute(&directory, value));
                 if INCLUDE_OPTIONS.contains(&option) {
                     include_dirs.insert(abs);
                 } else if option == "FI" {
