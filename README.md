@@ -33,11 +33,12 @@ and agents keep working on the originals, in their own encodings.
 - **Nothing leaves your machine.** No telemetry, no network access. The doctor's report has paths
   in it; it stays where it is made.
 
-**Status: stage 4 of 5.** This version judges, mirrors, writes the mirror database, runs the
-short doctor, has the clangd entry (`mixenc clangd`), the analysis tools (clangd's answers through
-MCP) and an analysis agent, the front gate (`mixenc edit` and the MCP tools that write originals in
-their own encoding), the commit gate (a git pre-commit) and Copilot's gate (hooks for VS Code's
-Copilot and Copilot CLI). Still to come: the VS Code extension.
+**Status: all five stages built.** mixenc judges, mirrors, writes the mirror database, checks
+(the short doctor and the deep one), has the clangd entry (`mixenc clangd`), the analysis tools
+(clangd's answers through MCP) and an analysis agent, the front gate (`mixenc edit` and the MCP
+tools that write originals in their own encoding), the commit gate (a git pre-commit), Copilot's
+gate (hooks for VS Code's Copilot and Copilot CLI), and a VS Code extension with the workspace file
+it opens.
 
 ## Requirements
 
@@ -49,8 +50,11 @@ Copilot and Copilot CLI). Still to come: the VS Code extension.
 
 ## Install
 
-From source, for now: `cargo install --git https://github.com/6r1ntry52o/mixenc` (Rust 1.89 or
-later). Releases with an exe will follow.
+- **mixenc**: from [Releases](https://github.com/6r1ntry52o/mixenc/releases), the zip for your PC
+  (`x86_64` or `aarch64`), checked with `SHA256SUMS`; put `mixenc.exe` on `PATH`. Or from source:
+  `cargo install --git https://github.com/6r1ntry52o/mixenc` (Rust 1.89 or later).
+- **The VS Code extension**: `mixenc-vscode-<version>.vsix` from the same release,
+  `code --install-extension mixenc-vscode-<version>.vsix`.
 
 ## Getting started
 
@@ -72,6 +76,8 @@ workspace/
 5. Install the commit gate: `mixenc hooks install`.
 6. For Copilot (VS Code and Copilot CLI): `mixenc copilot install` puts the hooks, the analysis agent,
    the MCP server and the entry under `~/.copilot` (below).
+7. For VS Code: `mixenc workspace` writes `cloneA.code-workspace`; open it (the extension's
+   "mixenc: Create a workspace" does steps 1, 2 and 7 from dialogs).
 
 ## The clangd entry
 
@@ -185,6 +191,51 @@ push `.git/hooks`):
   says so.
 - `git commit --no-verify` skips the gate when a person means the change.
 
+## VS Code (`mixenc workspace` and the extension)
+
+`mixenc workspace` writes `<repository>.code-workspace` next to `mixenc.json`, from it (edit
+`mixenc.json` and run it again, not the file):
+
+- the repositories and their documents (`wiki`) as folders; the mirror is not one of them;
+- vscode-clangd started through the entry (`clangd.path`, `clangd.arguments`), and Microsoft's
+  C/C++ IntelliSense off, so that one analyzer answers;
+- mixed and broken files read-only (`files.readonlyInclude`): an editor reads a file in one
+  encoding, and a save would break its other lines;
+- vscode-clangd and mixenc's extension as recommended extensions.
+
+It prints how to start Copilot CLI with the documents at hand (`--add-dir`).
+
+The extension (`editors/vscode`) is mixenc's face in VS Code; mixenc does the work. Usually nothing
+shows:
+
+- Each file opens in the encoding mixenc reads it in (a CP932 file as Shift JIS), or as the override
+  table says. A file open in another encoding is opened again (VS Code 1.100's encoding API).
+- Mixed, broken, ambiguous and unmirrored files are in the Problems panel with the reason; the
+  read-only list follows the judgements.
+- The mirror follows at start, after a save, when the window gets the focus back and after a
+  checkout, merge or pull.
+- A status bar item shows only when something is broken (click it) or while a long sync runs.
+- Commands: Create a workspace, Diagnose (the doctor's report; files that read two ways show both
+  readings side by side, and a button writes the choice into `mixenc.json`), Diagnose deeply,
+  Mirror everything again, Open mixenc.json.
+
+Its tests run it in a real VS Code on a sample (`npm run test:vscode`).
+
+## The deep doctor (`mixenc doctor --deep`)
+
+By hand, and slow: every translation unit of the mirror databases goes through `clangd --check`
+(half the processors at once; `--jobs`). The first run takes a baseline
+(`mirror/<repo>/.mixenc/deep-baseline.json`); later runs report:
+
+- translation units with more errors than at the baseline: MSVC builds the code, so a new error
+  means a file read wrong or a generated file missing (`--update-baseline` when the change is meant);
+- include files not found (a `.tlh` not built yet, a folder missing from the database);
+- headers no translation unit includes (clangd reads them with flags it guesses);
+- how many translation units clangd's background index holds.
+
+Progress goes to stderr (`progress 3/120 src/a.cpp` with `--json`). Like the short report, it stays
+on the PC where it is made.
+
 ## Copilot's gate (`mixenc copilot`)
 
 VS Code's Copilot and Copilot CLI run the same hooks (`~/.copilot/hooks/`). Their own tools read a
@@ -224,8 +275,13 @@ answered from a symbol to its callers and callees with the originals' paths.
 | Command | What it does |
 |---|---|
 | `mixenc init --repo <dir>... [--wiki <dir>]` | Write `mixenc.json` in the current folder |
-| `mixenc sync [--repo <name>]` | Mirror the repositories and their outside include folders, write the mirror databases |
+| `mixenc sync [--repo <name>] [--rebuild]` | Mirror the repositories and their outside include folders, write the mirror databases (`--rebuild`: every file anew) |
 | `mixenc doctor [--limit N]` | Check everything, change nothing |
+| `mixenc doctor --deep [--jobs N] [--update-baseline]` | The deep checks with clangd, against the baseline |
+| `mixenc workspace [--name N] [--force]` | Write the `.code-workspace` for VS Code |
+| `mixenc files [--all]` | The files that are not plain UTF-8 or ASCII, with judgement and state (what the extension reads) |
+| `mixenc override <file> <encoding\|skip>` / `--remove` | Decide how a file is read (the override table) and mirror it so at once |
+| `mixenc read <file> [--as E] [--start N] [--end M]` | A file's text, read as judged or as another encoding (to compare readings) |
 | `mixenc judge <file>...` | Print the judgement of files |
 | `mixenc clangd [args]...` | The clangd entry (every argument goes on to clangd) |
 | `mixenc edit <file> --old <text> --new <text> [--encoding E]` | The front gate: replace text, keeping the file's encoding (`--create` writes a new file) |

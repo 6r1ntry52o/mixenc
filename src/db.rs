@@ -412,6 +412,24 @@ pub fn analyze(entries: &[Entry], repo: &Path) -> Analysis {
     a
 }
 
+/// An entry's include folders and forced includes, absolute, in order (response files written out).
+pub fn includes_of(e: &Entry) -> (Vec<String>, Vec<String>) {
+    let directory = paths::long_form(&e.directory);
+    let args = expand_response_files(&e.arguments, &directory, &mut Vec::new());
+    let (mut dirs, mut forced) = (Vec::new(), Vec::new());
+    for arg in parse(&args) {
+        if let Arg::Path { option: Some(option), value, .. } = arg {
+            let abs = paths::absolute(&directory, value);
+            if INCLUDE_OPTIONS.contains(&option) {
+                dirs.push(abs);
+            } else if option == "FI" {
+                forced.push(abs);
+            }
+        }
+    }
+    (dirs, forced)
+}
+
 /// The folders not inside another of them.
 pub fn outermost(mut dirs: Vec<String>) -> Vec<String> {
     dirs.sort_by_key(|d| paths::key(d));

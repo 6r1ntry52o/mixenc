@@ -29,7 +29,7 @@ mixenc はリポの**写し**を UTF-8 でリポの外に作ります（行と�
 - **長いパス。** 約 950 文字のパスでも動きます。clangd が索引を保存できない長い名前（235 文字以上）は、doctor が一覧に出します。
 - **何も外に出さない。** テレメトリも通信もありません。doctor の出力にはパスが入るので、作った PC の中に置いておきます。
 
-**状態: 5 段のうち段 4。** この版でできるのは、判定・写す・写しの DB・doctor の短い版・入口（`mixenc clangd`）・解析の道具（MCP で clangd の答えを返す）と解析エージェント・正門（`mixenc edit` と、原本を元の文字コードで書く MCP の道具）・commit の関所（git の pre-commit）・Copilot の関所（VS Code の Copilot と Copilot CLI のフック）です。これから作るのは VS Code 拡張です。
+**状態: 5 段とも作った。** できるのは、判定・写す・写しの DB・doctor（短い版と深い版）・入口（`mixenc clangd`）・解析の道具（MCP で clangd の答えを返す）と解析エージェント・正門（`mixenc edit` と、原本を元の文字コードで書く MCP の道具）・commit の関所（git の pre-commit）・Copilot の関所（VS Code の Copilot と Copilot CLI のフック）・VS Code 拡張とそれが開くワークスペースのファイルです。
 
 ## 要るもの
 
@@ -40,7 +40,8 @@ mixenc はリポの**写し**を UTF-8 でリポの外に作ります（行と�
 
 ## 入れ方
 
-今はソースから入れます。`cargo install --git https://github.com/6r1ntry52o/mixenc`（Rust 1.89 以上）を実行してください。exe 付きのリリースは後で出します。
+- **mixenc**：[Releases](https://github.com/6r1ntry52o/mixenc/releases) から PC に合う zip（`x86_64` か `aarch64`）を取り、`SHA256SUMS` で確かめ、`mixenc.exe` を `PATH` に置きます。ソースからは `cargo install --git https://github.com/6r1ntry52o/mixenc`（Rust 1.89 以上）。
+- **VS Code 拡張**：同じリリースの `mixenc-vscode-<版>.vsix` を `code --install-extension mixenc-vscode-<版>.vsix` で入れます。
 
 ## 始め方
 
@@ -60,6 +61,7 @@ workspace/
 4. エディタやエージェントの clangd を、入口 `mixenc clangd` に向けます（下の節）。入口が起動のたびと動いている間に写すので、手で `mixenc sync` を実行するのは入口を使わない時だけです。
 5. commit の関所を入れます（`mixenc hooks install`）。
 6. Copilot（VS Code と Copilot CLI）には、`mixenc copilot install` でフック・解析エージェント・MCP サーバ・入口を `~/.copilot` に入れます（下の節）。
+7. VS Code には、`mixenc workspace` で `cloneA.code-workspace` を書き、それを開きます（拡張のコマンド「mixenc: ワークスペースを作る」なら、1・2・7 をダイアログで済ませます）。
 
 ## 入口（`mixenc clangd`）
 
@@ -138,6 +140,38 @@ CP932 のファイルを Unicode を通して読み書きするエディタや�
 - `core.hooksPath` が設定されている時（フックをほかで管理している）は入れません。doctor がそのことを出します。
 - 人が意図した変更は `git commit --no-verify` で通せます。
 
+## VS Code（`mixenc workspace` と拡張）
+
+`mixenc workspace` は、`mixenc.json` の隣に `<リポ>.code-workspace` を書きます。中身は `mixenc.json` から作るので、直す時はファイルではなく `mixenc.json` を直して、もう一度実行します。
+
+- リポとそのドキュメント（`wiki`）をフォルダにする（写しは入れない）
+- vscode-clangd を入口から起こす（`clangd.path`・`clangd.arguments`）。Microsoft の C/C++ の IntelliSense は止め、答えるのを 1 つにする
+- 混在・壊れのファイルは読み取り専用（`files.readonlyInclude`）。エディタはファイルを 1 つの文字コードで読むので、保存するとほかの行が壊れる
+- 勧める拡張に vscode-clangd と mixenc の拡張
+
+Copilot CLI をドキュメントと一緒に起こすコマンド（`--add-dir`）も出します。
+
+拡張（`editors/vscode`）は、VS Code での mixenc の顔です。仕事は mixenc がします。いつもは何も出しません。
+
+- ファイルは、mixenc が読む文字コード（CP932 なら Shift JIS）か上書き表のとおりに開きます。違う文字コードで開いていたら開き直します（VS Code 1.100 の文字コードの API）
+- 混在・壊れ・あいまい・写せないファイルは、理由と一緒に「問題」に出します。読み取り専用の一覧は判定に合わせて直します
+- 写しは、起動・保存・窓にフォーカスが戻った時・checkout や merge や pull の後に合わせます
+- ステータスバーには、崩れがある時（押すと診断）と、長い照合の間だけ出します
+- コマンド: ワークスペースを作る・診断（doctor の結果。2 通りに読めるファイルは読み方を並べ、ボタンで `mixenc.json` に書く）・深い診断・写しを作り直す・mixenc.json を開く
+
+拡張の試験は、見本を本物の VS Code で開いて確かめます（`npm run test:vscode`）。
+
+## doctor の深い版（`mixenc doctor --deep`）
+
+手で動かす、時間のかかる確かめです。写しの DB の全部の翻訳単位を `clangd --check` に通します（既定でプロセッサの半分ずつ・`--jobs`）。初めての時に基準（`mirror/<リポ>/.mixenc/deep-baseline.json`）を取り、次からは次を出します。
+
+- 基準よりエラーが増えた翻訳単位。MSVC ではビルドできるので、増えたエラーは読み違えたファイルか、まだ無い生成ファイル（意図した変更なら `--update-baseline`）
+- 見つからない include（まだビルドしていない `.tlh`、DB に無いフォルダ）
+- どの翻訳単位からも include されないヘッダ（clangd は推測の引数で読む）
+- clangd の背景の索引に入った翻訳単位の数
+
+進み具合は stderr に出します（`--json` の時は `progress 3/120 src/a.cpp`）。短い版と同じく、作った PC の中に置いておきます。
+
 ## Copilot の関所（`mixenc copilot`）
 
 VS Code の Copilot と Copilot CLI は、同じフック（`~/.copilot/hooks/`）を動かします。どちらも自分の道具で CP932 のファイルを UTF-8 として読み、UTF-8 として書き戻します。フックがそれを正します。
@@ -167,8 +201,13 @@ VS Code の Copilot と Copilot CLI は、同じフック（`~/.copilot/hooks/`�
 | コマンド | すること |
 |---|---|
 | `mixenc init --repo <dir>... [--wiki <dir>]` | 今のフォルダに `mixenc.json` を書く |
-| `mixenc sync [--repo <名前>]` | リポとリポの外の include を写し、写しの DB を書く |
+| `mixenc sync [--repo <名前>] [--rebuild]` | リポとリポの外の include を写し、写しの DB を書く（`--rebuild` は全部を作り直す） |
 | `mixenc doctor [--limit N]` | 全部を確かめる（何も変えない） |
+| `mixenc doctor --deep [--jobs N] [--update-baseline]` | clangd で深く確かめ、基準と比べる |
+| `mixenc workspace [--name N] [--force]` | VS Code の `.code-workspace` を書く |
+| `mixenc files [--all]` | UTF-8・ASCII でないファイルと、その判定と状態（拡張が読む） |
+| `mixenc override <file> <文字コード\|skip>` / `--remove` | ファイルの読み方を決め（上書き表）、すぐその読み方で写す |
+| `mixenc read <file> [--as E] [--start N] [--end M]` | ファイルの本文を、判定どおりか別の文字コードで読んで出す（読み方を比べる） |
 | `mixenc judge <file>...` | ファイルの判定を出す |
 | `mixenc clangd [args]...` | 入口（引数は全部 clangd に渡す） |
 | `mixenc edit <file> --old <文字> --new <文字> [--encoding E]` | 正門：文字コードを保って置き換える（`--create` で新しいファイル） |

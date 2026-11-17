@@ -43,12 +43,63 @@ enum Command {
         /// Only this repository (its name in mixenc.json)
         #[arg(long)]
         repo: Option<String>,
+        /// Read every file again and write every mirror anew (not only the files that changed)
+        #[arg(long)]
+        rebuild: bool,
     },
     /// Check the mirrors, the judgements, the databases and the long paths (changes nothing)
     Doctor {
         /// Paths to show per finding
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// The deep checks: every translation unit through `clangd --check`, held against the
+        /// baseline the first run takes (slow; progress on stderr)
+        #[arg(long)]
+        deep: bool,
+        /// With --deep: clangd processes at once (default: half the processors)
+        #[arg(long, requires = "deep")]
+        jobs: Option<usize>,
+        /// With --deep: take the baseline anew from this run
+        #[arg(long, requires = "deep")]
+        update_baseline: bool,
+    },
+    /// Write `<name>.code-workspace` for VS Code: the repositories and their documents, clangd
+    /// through the entry, mixed and broken files read-only
+    Workspace {
+        /// The file's name (default: the first repository's)
+        #[arg(long)]
+        name: Option<String>,
+        /// Replace a file of that name mixenc did not write
+        #[arg(long)]
+        force: bool,
+    },
+    /// List the files that are not plain UTF-8 or ASCII, with their judgement and state (--all: every file)
+    Files {
+        #[arg(long)]
+        all: bool,
+    },
+    /// Decide how a file is read (the override table in mixenc.json): an encoding, or skip
+    Override {
+        file: PathBuf,
+        /// cp932, utf8, euc-jp, utf16le, ... or skip
+        #[arg(required_unless_present = "remove")]
+        read_as: Option<String>,
+        /// Take the file's entry out
+        #[arg(long, conflicts_with = "read_as")]
+        remove: bool,
+    },
+    /// Print a file's text read as its judgement, or as another encoding (to compare readings)
+    Read {
+        file: PathBuf,
+        /// Read it as this encoding
+        #[arg(long = "as", value_name = "ENCODING")]
+        read_as: Option<String>,
+        /// The first line (1-based)
+        #[arg(long, default_value_t = 1)]
+        start: usize,
+        /// The last line
+        #[arg(long)]
+        end: Option<usize>,
     },
     /// Print the judgement of files
     Judge {
@@ -201,8 +252,19 @@ fn run(cli: &Cli) -> Result<u8> {
             }
             Ok(0)
         }
-        Command::Sync { repo } => {
+        Command::Sync { repo, rebuild } => {
             let ws = Workspace::find(&dir)?;
+            if *rebuild {
+                // Without its index a mirror is read and written anew, file by file.
+                for at in mixenc::locate::roots(&ws) {
+                    if repo.as_deref().is_none_or(|n| at.repo.name.eq_ignore_ascii_case(n)) {
+                        let index = mixenc::index::Index::path(&at.root.mirror);
+                        if index.is_file() {
+                            std::fs::remove_file(&index)?;
+                        }
+                    }
+                }
+            }
             let results = sync::sync(&ws, repo.as_deref())?;
             print_sync(&ws, &results, cli.json);
             let not_mirrored = results.iter().any(|r| {
@@ -212,9 +274,21 @@ fn run(cli: &Cli) -> Result<u8> {
             });
             Ok(u8::from(not_mirrored || results.iter().any(|r| !r.state.db_problems.is_empty())))
         }
-        Command::Doctor { limit } => {
+        Command::Doctor { limit, deep, jobs, update_baseline } => {
             let ws = Workspace::find(&dir)?;
-            let report = doctor::run(&ws);
+            let report = if *deep {
+                let opts = mixenc::deep::Options { jobs: *jobs, update_baseline: *update_baseline };
+                let json = cli.json;
+                mixenc::deep::run(&ws, &opts, &move |done, total, file| {
+                    if json {
+                        eprintln!("progress {done}/{total} {file}");
+                    } else {
+                        eprintln!("[{done}/{total}] {file}");
+                    }
+                })?
+            } else {
+                doctor::run(&ws)
+            };
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -261,6 +335,132 @@ fn run(cli: &Cli) -> Result<u8> {
             Ok(0)
         }
         Command::Hooks { command } => run_hooks(cli, &dir, command),
+        Command::Workspace { name, force } => {
+            let ws = Workspace::find(&dir)?;
+            let path = mixenc::codews::write(&ws, &std::env::current_exe()?, name.as_deref(), *force)?;
+            let copilot = mixenc::codews::copilot_command(&ws);
+            if cli.json {
+                println!("{}", json!({ "path": paths::display(&path), "copilot": copilot }));
+            } else {
+                println!("wrote {}", paths::display(&path));
+                if let Some(c) = copilot {
+                    println!("Copilot CLI with the documents at hand (in a repository): {c}");
+                }
+            }
+            Ok(0)
+        }
+        Command::Files { all } => {
+            let ws = Workspace::find(&dir)?;
+            let mut files = Vec::new();
+            for at in mixenc::locate::roots(&ws) {
+                let index = mixenc::index::Index::load(&at.root.mirror, &at.root.source);
+                for (rel, s) in index.files {
+                    let read = s.read_as.unwrap_or(s.judged);
+                    if !*all && matches!(read, judge::Encoding::Ascii | judge::Encoding::Utf8) && s.problem.is_none() {
+                        continue;
+                    }
+                    let problem = s.problem.as_ref().map(|p| serde_json::to_value(p).unwrap_or_default());
+                    // A mixed or broken file opens in the encoding most of its lines are in.
+                    let major = matches!(read, judge::Encoding::Mixed | judge::Encoding::Broken)
+                        .then(|| std::fs::read(paths::join_rel(&at.root.source, &rel)).ok())
+                        .flatten()
+                        .and_then(|b| mixenc::doc::parse(&b, read))
+                        .map(|d| if d.major() == mixenc::doc::LineEnc::Cp932 { "cp932" } else { "utf8" });
+                    files.push(json!({
+                        "path": paths::display(&paths::join_rel(&at.root.source, &rel)),
+                        "repo": at.repo.name,
+                        "external": at.external,
+                        "judged": s.judged.name(),
+                        "read_as": s.read_as.map(|e| e.name()),
+                        "mirrored": s.mirror.is_some(),
+                        "problem": problem,
+                        "readonly": matches!(s.judged, judge::Encoding::Mixed | judge::Encoding::Broken) && s.mirror.is_some(),
+                        "major": major,
+                    }));
+                }
+            }
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&json!({ "files": files }))?);
+            } else {
+                for f in &files {
+                    let read_as = f["read_as"]
+                        .as_str()
+                        .filter(|r| *r != f["judged"])
+                        .map(|r| format!(" (read as {r})"))
+                        .unwrap_or_default();
+                    let state = if f["mirrored"] == true { "" } else { "  not mirrored" };
+                    println!(
+                        "{}{read_as}\t{}{state}",
+                        f["judged"].as_str().unwrap_or(""),
+                        f["path"].as_str().unwrap_or("")
+                    );
+                }
+            }
+            Ok(0)
+        }
+        Command::Override { file, read_as, remove } => {
+            let path = if file.is_absolute() { file.clone() } else { dir.join(file) };
+            let place = mixenc::locate::find(&path, None)
+                .ok_or_else(|| anyhow::anyhow!("{} is not in a folder a workspace mirrors", paths::display(&path)))?;
+            let original = place.original();
+            let read_as = match (remove, read_as.as_deref()) {
+                (true, _) => None,
+                (false, Some("skip")) => Some(config::ReadAs::Skip),
+                (false, Some(name)) => {
+                    let e: judge::Encoding = name.parse().map_err(anyhow::Error::msg)?;
+                    if !e.is_decided() || e == judge::Encoding::Binary {
+                        anyhow::bail!("{name} is a judgement, not an encoding to read a file as");
+                    }
+                    Some(config::ReadAs::Encoding(e))
+                }
+                (false, None) => anyhow::bail!("give the encoding (or skip), or --remove"),
+            };
+            let judged = std::fs::read(&original).ok().map(|b| judge::judge(&b));
+            let changed = config::set_override(&place.ws, &original, read_as, judged)?;
+            // Mirror the file the new way at once.
+            let ws = Workspace::load(&place.ws.root)?;
+            if let Some(place) = mixenc::locate::find(&original, Some(&ws)) {
+                place.sync()?;
+            }
+            println!("{} {}", if changed { "updated" } else { "no entry for" }, ws.display_path(&original));
+            Ok(0)
+        }
+        Command::Read { file, read_as, start, end } => {
+            let path = if file.is_absolute() { file.clone() } else { dir.join(file) };
+            let bytes = std::fs::read(&path).map_err(|e| anyhow::anyhow!("{}: {e}", paths::display(&path)))?;
+            let judged = judge::judge(&bytes);
+            let wanted = match read_as {
+                Some(name) => name.parse::<judge::Encoding>().map_err(anyhow::Error::msg)?,
+                None => mixenc::locate::find(&path, None)
+                    .and_then(|p| p.read_as())
+                    .and_then(|r| match r {
+                        config::ReadAs::Encoding(e) => Some(e),
+                        config::ReadAs::Skip => None,
+                    })
+                    .unwrap_or(judged),
+            };
+            let wanted = match wanted {
+                judge::Encoding::AmbiguousCp932EucJp => judge::Encoding::Cp932,
+                e => e,
+            };
+            let doc = mixenc::doc::parse(&bytes, wanted)
+                .ok_or_else(|| anyhow::anyhow!("{} cannot be read as {wanted}", paths::display(&path)))?;
+            let last = end.unwrap_or(doc.lines.len()).min(doc.lines.len());
+            let lines: Vec<&str> =
+                doc.lines.iter().take(last).skip(start.saturating_sub(1)).map(|l| l.text.as_str()).collect();
+            if cli.json {
+                let unread = doc.lines.iter().filter(|l| !l.ok).count();
+                println!(
+                    "{}",
+                    json!({ "path": paths::display(&path), "judged": judged.name(), "read_as": wanted.name(), "start": start, "lines": lines, "unreadable_lines": unread })
+                );
+            } else {
+                for (i, l) in lines.iter().enumerate() {
+                    println!("{:>5}  {l}", start + i);
+                }
+            }
+            Ok(0)
+        }
         Command::Copilot { command } => run_copilot(cli, command),
         Command::Judge { files } => {
             let mut out = Vec::new();

@@ -48,6 +48,22 @@ others to read (`mixenc.json`, `repo.json`, the doctor's `--json` report) carry 
   and the doctor's short report. `mixenc copilot install|uninstall|status` puts the hooks, the
   agent, the MCP server and the entry (as Copilot CLI's clangd) under `~/.copilot`, keeping other
   settings; the doctor says whether they are there.
+- Stage 5: `mixenc workspace` writes the `.code-workspace` (repositories and documents, clangd
+  through the entry, Microsoft's IntelliSense off, mixed and broken files read-only, recommended
+  extensions) and prints how to start Copilot CLI with the documents.
+- Stage 5: the VS Code extension (`editors/vscode`): opens each file in the encoding mixenc reads it
+  in, lists files that need care in the Problems panel, keeps the read-only list and the mirror up
+  to date (start, save, focus, git), shows a status bar item only when something is broken, and has
+  the commands Create a workspace, Diagnose (with the two readings of an ambiguous file side by side
+  and a button for the override), Diagnose deeply, Mirror everything again and Open mixenc.json.
+  English and Japanese.
+- Stage 5: the deep doctor, `mixenc doctor --deep`: `clangd --check` on every translation unit,
+  against a baseline the first run takes; include files not found, headers no translation unit
+  includes, how much clangd's index holds.
+- `mixenc files`, `mixenc override`, `mixenc read` and `mixenc sync --rebuild`, for the extension
+  and by hand.
+- Releases: a zip per architecture with `mixenc.exe` and the third-party licenses, the extension's
+  `.vsix`, and `SHA256SUMS`.
 
 ### Fixed
 

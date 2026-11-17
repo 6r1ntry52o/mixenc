@@ -46,6 +46,37 @@ jobs:
           git config --global core.longpaths true
           cargo test --locked --no-fail-fast
 
+  vscode:
+    name: VS Code extension
+    runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: mixenc (the extension runs it)
+        working-directory: .
+        run: cargo build --release --locked
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Package
+        run: npx vsce package --no-dependencies
+
+      - name: In VS Code
+        # Downloads VS Code (stable) and runs the extension on a sample workspace.
+        run: npm run test:vscode
+
   msrv:
     name: minimum Rust version
     runs-on: windows-2022

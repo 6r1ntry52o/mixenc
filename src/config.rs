@@ -271,6 +271,35 @@ pub fn init(root: &Path, repos: &[String], wiki: Option<&str>) -> Result<PathBuf
     Ok(file)
 }
 
+/// Writes (or with `None` removes) a file's entry in the override table of `mixenc.json`, with the
+/// file's judgement now, so that the doctor sees when it changes. The rest of the file is kept.
+pub fn set_override(ws: &Workspace, abs: &Path, read_as: Option<ReadAs>, judged: Option<Encoding>) -> Result<bool> {
+    let file = ws.file();
+    let text = fs::read_to_string(&file).with_context(|| format!("reading {}", paths::display(&file)))?;
+    let mut config: Config =
+        serde_json::from_str(&text).with_context(|| format!("reading {}", paths::display(&file)))?;
+    let key = ws.display_path(abs);
+    // An entry written another way (absolute, other case) for the same file is replaced too.
+    let same: Vec<String> = config
+        .overrides
+        .keys()
+        .filter(|k| paths::key(&paths::absolute(&ws.root.to_string_lossy(), k)) == paths::key(&abs.to_string_lossy()))
+        .cloned()
+        .collect();
+    let mut changed = false;
+    for k in same {
+        changed |= config.overrides.remove(&k).is_some();
+    }
+    if let Some(read_as) = read_as {
+        config.overrides.insert(key, Override { read_as, judged });
+        changed = true;
+    }
+    let text = serde_json::to_string_pretty(&config)? + "\n";
+    crate::fsx::write_replace(&ws.root, &file, text.as_bytes(), false)
+        .with_context(|| format!("writing {}", paths::display(&file)))?;
+    Ok(changed)
+}
+
 fn relative_to(root: &Path, p: &str) -> String {
     let root = paths::normalize(
         &std::path::absolute(root)

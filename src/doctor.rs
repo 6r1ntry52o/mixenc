@@ -53,6 +53,9 @@ pub struct Summary {
     /// Lines the mirror reads right that a UTF-8 reader would splice.
     pub traps: u64,
     pub encodings: BTreeMap<String, usize>,
+    /// The deep checks: translation units checked with clangd.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub units: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -648,10 +651,15 @@ impl Report {
             }
         }
         let s = &self.summary;
-        out.push_str(&format!(
-            "\n{} broken, {} notices, {} ok; {} files, {} mirrored, {} lines a UTF-8 reader would splice\n",
-            s.broken, s.notice, s.ok, s.files, s.mirrored, s.traps
-        ));
+        out.push_str(&match s.units {
+            Some(units) => {
+                format!("\n{} broken, {} notices, {} ok; {units} translation units checked\n", s.broken, s.notice, s.ok)
+            }
+            None => format!(
+                "\n{} broken, {} notices, {} ok; {} files, {} mirrored, {} lines a UTF-8 reader would splice\n",
+                s.broken, s.notice, s.ok, s.files, s.mirrored, s.traps
+            ),
+        });
         out
     }
 }

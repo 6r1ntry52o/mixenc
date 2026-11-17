@@ -1,0 +1,99 @@
+{
+  "name": "mixenc",
+  "displayName": "mixenc",
+  "description": "%description%",
+  "version": "0.1.0",
+  "publisher": "6r1ntry52o",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/6r1ntry52o/mixenc",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "clangd",
+    "shift-jis",
+    "cp932",
+    "encoding",
+    "C++"
+  ],
+  "l10n": "./l10n",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "%untrusted%",
+      "restrictedConfigurations": ["mixenc.path"]
+    }
+  },
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "workspaceContains:mixenc.json"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "mixenc.createWorkspace",
+        "title": "%command.createWorkspace%",
+        "category": "mixenc"
+      },
+      {
+        "command": "mixenc.diagnose",
+        "title": "%command.diagnose%",
+        "category": "mixenc"
+      },
+      {
+        "command": "mixenc.diagnoseDeep",
+        "title": "%command.diagnoseDeep%",
+        "category": "mixenc"
+      },
+      {
+        "command": "mixenc.rebuild",
+        "title": "%command.rebuild%",
+        "category": "mixenc"
+      },
+      {
+        "command": "mixenc.openConfig",
+        "title": "%command.openConfig%",
+        "category": "mixenc"
+      }
+    ],
+    "configuration": {
+      "title": "mixenc",
+      "properties": {
+        "mixenc.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "%config.path%"
+        },
+        "mixenc.workspace": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "%config.workspace%"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "npm run compile && node --test out/test/logic.test.js",
+    "test:vscode": "npm run compile && node out/test/integration/run.js",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/vscode": "~1.100.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.9.2"
+  }
+}
