@@ -351,7 +351,9 @@ impl Session {
     /// The root and relative path (with `/`) of a document, when it is mirrored.
     fn locate(&self, uri: &str) -> Option<(&Root, String, PathBuf)> {
         let path = uri::to_path(uri)?;
-        let s = paths::long_form(&path.to_string_lossy());
+        // As the disk spells it, so that the relative path is the one git lists (an index entry
+        // per spelling would have the next sync remove the mirror as gone).
+        let s = paths::display(&paths::canonical(&path));
         self.roots.iter().find_map(|root| {
             paths::rest_under(&s, &root.source.to_string_lossy())
                 .filter(|rest| !rest.is_empty())
