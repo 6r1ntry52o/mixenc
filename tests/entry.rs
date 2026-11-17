@@ -45,6 +45,8 @@ fn write(path: &Path, bytes: &[u8]) {
 
 /// Line 4 of a.cpp: a CP932 string before the calls, so its columns differ between the readings.
 const A: &str = "#include \"hyo.h\"\n#include \"ext_hidden.h\"\n// 能\nint only_b();\nint main() { const char* s = \"表示\"; return hidden(1) + only_b() + ext_hidden(); }\n";
+/// Line 2 of hyo.h: CP932 before the declaration, likewise.
+const HYO: &str = "#pragma once\n// 表\n/* 表示 */ int hidden(int);\n";
 
 struct Fixture {
     _tmp: tempfile::TempDir,
@@ -59,7 +61,7 @@ fn fixture() -> Fixture {
     let repo = ws.join("repos").join("cloneA");
     let ext = base.join("vendor").join("inc");
     let crlf = |s: &str| s.replace('\n', "\r\n");
-    write(&repo.join("src/hyo.h"), &sjis(&crlf("#pragma once\n// 表\nint hidden(int);\n")));
+    write(&repo.join("src/hyo.h"), &sjis(&crlf(HYO)));
     write(&repo.join("src/a.cpp"), &sjis(&crlf(A)));
     write(&repo.join("src/b.cpp"), &sjis(&crlf("// ソ\nint only_b() { return 2; }\n")));
     write(&ext.join("ext_hidden.h"), &sjis(&crlf("#pragma once\n// 表\nint ext_hidden();\n")));
@@ -312,6 +314,19 @@ fn a_client_that_sends_cp932_misread_as_utf8() {
         "the answer comes back in the client's columns: {highlights}"
     );
     assert_eq!(on_line_4[0]["range"]["end"]["character"], col + "hidden".len());
+
+    // The same client opens hyo.h read right (as VS Code does once the encoding is set): the
+    // columns of that document are not moved.
+    let h = uri(&f.repo.join("src/hyo.h"));
+    let right = HYO.replace('\n', "\r\n");
+    c.open(&h, &right);
+    c.diagnostics_of(&h);
+    let col = column(&right, 2, "hidden");
+    let highlights = c.request(
+        "textDocument/documentHighlight",
+        json!({"textDocument": {"uri": h}, "position": {"line": 2, "character": col}}),
+    );
+    assert_eq!(highlights[0]["range"]["start"]["character"], col, "{highlights}");
     c.stop();
 }
 

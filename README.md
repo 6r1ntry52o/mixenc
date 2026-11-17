@@ -88,6 +88,11 @@ client:
 Which clangd it starts: `MIXENC_CLANGD`, else `"clangd"` in `mixenc.json`, else `clangd.exe` on
 `PATH`, else the one vscode-clangd installed.
 
+It keeps a log in `mirror\.mixenc\entry.log` (on this PC only): how each document came (read right,
+misread and replaced), the diagnostics counts, and where definitions and references lead (a
+mirror path there would be a bug). Both VS Code without a `files.encoding` and Copilot CLI send CP932
+files misread as UTF-8 (measured); the entry replaces them.
+
 - **VS Code** (vscode-clangd): `"clangd.path": "C:\\Tools\\mixenc.exe"` and
   `"clangd.arguments": ["clangd", "--background-index"]`.
 - **Copilot CLI**: in `~/.copilot/lsp-config.json`, `"command": "mixenc"`,

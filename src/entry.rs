@@ -12,12 +12,12 @@
 //! - When the entry itself fails on a message, it passes that message through as it came.
 
 use std::collections::HashMap;
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -31,6 +31,14 @@ use crate::{lsp, paths, sync, translate, uri};
 
 /// clangd options the entry sets itself.
 const OWN_OPTIONS: [&str; 2] = ["--compile-commands-dir", "--path-mappings"];
+/// Requests whose answers are locations; the log records where they lead.
+const LOCATION_METHODS: [&str; 5] = [
+    "textDocument/definition",
+    "textDocument/declaration",
+    "textDocument/typeDefinition",
+    "textDocument/implementation",
+    "textDocument/references",
+];
 
 /// Runs the entry with clangd's arguments; returns clangd's exit code.
 pub fn run(args: Vec<String>) -> Result<i32> {
@@ -101,8 +109,37 @@ pub fn find_clangd(ws: Option<&Workspace>) -> Result<PathBuf> {
     bail!("clangd not found: set MIXENC_CLANGD, \"clangd\" in mixenc.json, or put clangd.exe on PATH")
 }
 
+static LOG_FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
+static STARTED: OnceLock<Instant> = OnceLock::new();
+
+/// Opens the workspace's entry log, `mirror/.mixenc/entry.log` (every entry appends, each line with
+/// its process id; started anew past 4 MB). It stays on this PC, like the doctor's report.
+fn open_log(ws: &Workspace) {
+    let dir = ws.state_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("entry.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 4 << 20) {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = LOG_FILE.set(Mutex::new(file));
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    detail(&format!("start (unix time {now}), mixenc {}", env!("CARGO_PKG_VERSION")));
+}
+
+/// To stderr (the editor's output for the language server) and the log.
 fn log(message: &str) {
     eprintln!("mixenc: {message}");
+    detail(message);
+}
+
+/// To the log only.
+fn detail(message: &str) {
+    if let Some(file) = LOG_FILE.get() {
+        let elapsed = STARTED.get_or_init(Instant::now).elapsed().as_secs_f64();
+        let _ = writeln!(file.lock().unwrap(), "[{} +{elapsed:.3}s] {message}", std::process::id());
+    }
 }
 
 /// No workspace: clangd as it is, with the first message already read.
@@ -143,9 +180,13 @@ struct Translated {
 #[derive(Default)]
 struct State {
     units: Units,
-    /// The client sent a misread text once: its columns are moved from then on.
+    /// The client's last CP932 document came misread: the files it has not opened are taken to be
+    /// read so too (it reads them from disk the same way).
     misreading: bool,
+    /// Documents opened misread: their columns are moved.
     translated: HashMap<String, Translated>,
+    /// Documents opened with the mirror's text (read right): their columns are not moved.
+    read_right: std::collections::HashSet<String>,
     /// Requests from the client: id → (method, document).
     pending: HashMap<String, (String, Option<String>)>,
     /// Column maps of files on disk, by path: (size, time, map).
@@ -155,6 +196,14 @@ struct State {
     initialized: bool,
     told_broken: bool,
     told_unknown_text: bool,
+}
+
+impl State {
+    /// Whether any position may need moving: a document is open misread, or unopened files are
+    /// taken to be read so.
+    fn moves_columns(&self) -> bool {
+        self.misreading || !self.translated.is_empty()
+    }
 }
 
 struct Session {
@@ -171,6 +220,14 @@ struct Session {
 
 impl Session {
     fn start(ws: Workspace, initialize: &Value, args: &[String]) -> Result<Arc<Session>> {
+        STARTED.get_or_init(Instant::now);
+        open_log(&ws);
+        let client = &initialize["params"]["clientInfo"];
+        detail(&format!(
+            "client {} {}",
+            client["name"].as_str().unwrap_or("(no name)"),
+            client["version"].as_str().unwrap_or("")
+        ));
         let folders = client_folders(initialize);
         let all = ws.repos();
         let mut repos: Vec<RepoPaths> = all
@@ -193,6 +250,7 @@ impl Session {
         for repo in &repos {
             match sync::sync_repo(&ws, repo) {
                 Ok(result) => {
+                    detail(&sync_summary(&result));
                     notices.extend(problems_of(&result));
                     roots.extend(result.state.roots());
                     mappings
@@ -233,6 +291,7 @@ impl Session {
             repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "),
             paths::display(&clangd)
         ));
+        detail(&format!("clangd arguments: {clangd_args:?}"));
         let mut child = Command::new(&clangd)
             .args(&clangd_args)
             .stdin(Stdio::piped())
@@ -348,6 +407,42 @@ impl Session {
         }
     }
 
+    /// A document for the log: its path as `mixenc.json` names it, marked when it is a mirror's
+    /// (clangd's answers should never lead there).
+    fn describe_uri(&self, u: &str) -> String {
+        let Some(path) = uri::to_path(u) else { return u.to_string() };
+        let mark = if paths::is_under(&path.to_string_lossy(), &self.ws.mirror_root().to_string_lossy()) {
+            " (A MIRROR PATH)"
+        } else {
+            ""
+        };
+        format!("{}{mark}", self.ws.display_path(&path))
+    }
+
+    /// The locations of an answer for the log: up to five, as path:line (1-based).
+    fn describe_locations(&self, result: &Value) -> String {
+        let items: Vec<&Value> = match result {
+            Value::Array(items) => items.iter().collect(),
+            Value::Object(_) => vec![result],
+            _ => Vec::new(),
+        };
+        let mut out: Vec<String> = items
+            .iter()
+            .take(5)
+            .filter_map(|l| {
+                let u = l["uri"].as_str().or_else(|| l["targetUri"].as_str())?;
+                let range = if l.get("range").is_some() { &l["range"] } else { &l["targetSelectionRange"] };
+                let line = range["start"]["line"].as_u64().map_or(0, |n| n + 1);
+                let column = range["start"]["character"].as_u64().unwrap_or(0);
+                Some(format!("{}:{line}:{column}", self.describe_uri(u)))
+            })
+            .collect();
+        if items.len() > 5 {
+            out.push(format!("and {} more", items.len() - 5));
+        }
+        if out.is_empty() { "nothing".into() } else { out.join(", ") }
+    }
+
     /// The root and relative path (with `/`) of a document, when it is mirrored.
     fn locate(&self, uri: &str) -> Option<(&Root, String, PathBuf)> {
         let path = uri::to_path(uri)?;
@@ -369,6 +464,9 @@ impl Session {
     fn map_for(&self, state: &mut State, uri: &str) -> Option<Arc<FileMap>> {
         if let Some(t) = state.translated.get(uri) {
             return Some(t.map.clone());
+        }
+        if !state.misreading || state.read_right.contains(uri) {
+            return None;
         }
         let (_, _, path) = self.locate(uri)?;
         let meta = std::fs::metadata(&path).ok()?;
@@ -406,7 +504,9 @@ impl Session {
             }
             Some("textDocument/didClose") => {
                 if let Some(uri) = message["params"]["textDocument"]["uri"].as_str() {
-                    self.state.lock().unwrap().translated.remove(uri);
+                    let mut state = self.state.lock().unwrap();
+                    state.translated.remove(uri);
+                    state.read_right.remove(uri);
                 }
                 false
             }
@@ -424,10 +524,21 @@ impl Session {
             .or_else(|| params["item"]["uri"].as_str())
             .or_else(|| params["uri"].as_str())
             .map(str::to_string);
+        if LOCATION_METHODS.contains(&method)
+            && let Some(doc) = &document
+        {
+            let p = &params["position"];
+            detail(&format!(
+                "{method} {}:{}:{}",
+                self.describe_uri(doc),
+                p["line"].as_u64().map_or(0, |n| n + 1),
+                p["character"]
+            ));
+        }
         let mut state = self.state.lock().unwrap();
         let mut method = method.to_string();
         let mut changed = false;
-        if state.misreading
+        if state.moves_columns()
             && let Some(doc) = &document
         {
             if method == "textDocument/semanticTokens/full/delta" && self.map_for(&mut state, doc).is_some() {
@@ -459,6 +570,7 @@ impl Session {
             .read_as
             .filter(|e| matches!(e, Encoding::Cp932 | Encoding::Mixed | Encoding::Broken | Encoding::EucJp))
         else {
+            detail(&format!("open {rel} ({}): as sent", file.judged));
             return false;
         };
         let (Ok(bytes), Ok(mirror_text)) =
@@ -468,10 +580,18 @@ impl Session {
         };
         let Some(text) = message["params"]["textDocument"]["text"].as_str() else { return false };
         if text == mirror_text {
+            detail(&format!("open {rel} ({read_as}): the client read it right (the mirror's text), as sent"));
+            let mut state = self.state.lock().unwrap();
+            if std::mem::replace(&mut state.misreading, false) {
+                log("the client reads CP932 files right now: the columns of documents it opens right are not moved");
+            }
+            state.translated.remove(&uri);
+            state.read_right.insert(uri);
             return false;
         }
         let misread = String::from_utf8_lossy(&bytes);
         if text == misread || Some(text) == misread.strip_prefix('\u{FEFF}') {
+            detail(&format!("open {rel} ({read_as}): misread as UTF-8, replaced with the mirror's text"));
             let mut state = self.state.lock().unwrap();
             let units = state.units;
             if let Some(map) = FileMap::new(&bytes, read_as, units) {
@@ -481,11 +601,13 @@ impl Session {
                     );
                 }
                 state.misreading = true;
+                state.read_right.remove(&uri);
                 state.translated.insert(uri.clone(), Translated { map: Arc::new(map), client_text: text.to_string() });
             }
             message["params"]["textDocument"]["text"] = Value::from(mirror_text);
             return true;
         }
+        detail(&format!("open {rel} ({read_as}): neither the misread original nor the mirror's text, as sent"));
         let tell = {
             let mut state = self.state.lock().unwrap();
             text.contains('\u{FFFD}') && !std::mem::replace(&mut state.told_unknown_text, true)
@@ -562,7 +684,10 @@ impl Session {
                 state.initialized = true;
                 return body.to_vec();
             }
-            if !state.misreading || message.get("result").is_none_or(Value::is_null) {
+            if !state.moves_columns() || message.get("result").is_none_or(Value::is_null) {
+                if LOCATION_METHODS.contains(&method.as_str()) {
+                    detail(&format!("{method} -> {}", self.describe_locations(&message["result"])));
+                }
                 return body.to_vec();
             }
             if method.starts_with("textDocument/semanticTokens/") {
@@ -579,7 +704,16 @@ impl Session {
                 translate::positions(&mut message["result"], document.as_deref(), Way::ToClient, &mut lookup);
                 changed = message["result"] != before;
             }
-        } else if state.misreading && message.get("params").is_some() {
+            if LOCATION_METHODS.contains(&method.as_str()) {
+                detail(&format!("{method} -> {} (columns moved)", self.describe_locations(&message["result"])));
+            }
+        } else if message["method"] == "textDocument/publishDiagnostics" {
+            let diagnostics = message["params"]["diagnostics"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let file = message["params"]["uri"].as_str().map(|u| self.describe_uri(u)).unwrap_or_default();
+            let first: Vec<&str> = diagnostics.iter().take(3).filter_map(|d| d["message"].as_str()).collect();
+            detail(&format!("diagnostics {file}: {} {first:?}", diagnostics.len()));
+        }
+        if state.moves_columns() && message.get("method").is_some() && message.get("params").is_some() {
             let document = message["params"]["uri"].as_str().map(str::to_string);
             let before = message["params"].clone();
             let mut lookup = |u: &str| self.map_for(&mut state, u);
@@ -626,6 +760,7 @@ impl Session {
             for repo in &self.repos {
                 match sync::sync_repo(&self.ws, repo) {
                     Ok(result) => {
+                        detail(&format!("after a change: {}", sync_summary(&result)));
                         let notices = problems_of(&result);
                         self.state.lock().unwrap().notices.extend(notices);
                     }
@@ -672,6 +807,29 @@ fn matters(event: &notify::Result<notify::Event>) -> bool {
         );
         !ignored_dir && !build_output
     })
+}
+
+/// One line about a sync, for the log.
+fn sync_summary(result: &sync::RepoSync) -> String {
+    let mut parts = vec![format!(
+        "sync {}: {} files, {} written, {} removed, {} not mirrored",
+        result.name,
+        result.repo.files,
+        result.repo.written,
+        result.repo.removed,
+        result.repo.not_mirrored.len()
+    )];
+    for (root, o) in &result.external {
+        parts.push(format!("outside {}: {} files, {} written", paths::display(&root.source), o.files, o.written));
+    }
+    if let Some(db) = &result.state.db {
+        parts.push(format!(
+            "database: {} entries, {}",
+            db.entries,
+            if db.mirror.is_some() { "written" } else { "NOT written" }
+        ));
+    }
+    parts.join("; ")
 }
 
 /// What the client should know after a sync.

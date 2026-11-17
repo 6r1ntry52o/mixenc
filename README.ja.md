@@ -77,6 +77,13 @@ workspace/
 3. `PATH` の `clangd.exe`
 4. vscode-clangd が入れたもの
 
+入口は `mirror\.mixenc\entry.log` にログを残します（この PC の中だけ）。中身は次のとおりです。
+- それぞれの本文がどう届いたか（正しく読んだ・読み違えたので差し替えた）
+- 診断の件数
+- 定義と参照がどこに返ったか（写しのパスが出たら不具合）
+
+`files.encoding` を指定しない VS Code も、Copilot CLI も、CP932 のファイルを UTF-8 として読み違えて送ってきます（実測）。入口はそれを差し替えます。
+
 - **VS Code**（vscode-clangd）：`"clangd.path": "C:\\Tools\\mixenc.exe"` と `"clangd.arguments": ["clangd", "--background-index"]`。
 - **Copilot CLI**：`~/.copilot/lsp-config.json` に `"command": "mixenc"` と `"args": ["clangd", "--background-index"]`。
 - **`clangd` を起こすもの全般**：`mixenc.exe` を `clangd.exe` という名前で、本物より `PATH` の前に置くと入口になります（clangd を探す時は自分を飛ばします）。

@@ -20,9 +20,14 @@ others to read (`mixenc.json`, `repo.json`, the doctor's `--json` report) carry 
   mirror's and moves that client's columns both ways, reports what is not mirrored, and passes a
   message through when it fails on it.
 
+- The entry's log, `mirror\.mixenc\entry.log`: how documents came, diagnostics counts, where
+  definitions and references lead.
+
 ### Fixed
 
 - `--path-mappings` lists every root with an upper-case and a lower-case drive letter (clangd
   matches the case; VS Code sends `c:`).
+- A client that read one document misread and opens another right: the columns of the one read
+  right are no longer moved.
 - Paths written with 8.3 short names (`RUNNER~1`) and paths in another case than the disk's are
   recognized as the same folders.
