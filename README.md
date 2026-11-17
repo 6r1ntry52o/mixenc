@@ -33,10 +33,10 @@ and agents keep working on the originals, in their own encodings.
 - **Nothing leaves your machine.** No telemetry, no network access. The doctor's report has paths
   in it; it stays where it is made.
 
-**Status: stage 1 of 5.** This version judges, mirrors, writes the mirror database and runs the
-short doctor. Still to come: the clangd entry (`mixenc clangd`: starts clangd on the mirror and
-rewrites what editors send), the MCP tools (analysis, and writing originals in their own
-encoding), the Copilot hooks and git pre-commit gate, and the VS Code extension.
+**Status: stage 2 of 5.** This version judges, mirrors, writes the mirror database, runs the
+short doctor, and has the clangd entry (`mixenc clangd`). Still to come: the MCP tools (analysis,
+and writing originals in their own encoding), the Copilot hooks and git pre-commit gate, and the
+VS Code extension.
 
 ## Requirements
 
@@ -66,11 +66,34 @@ workspace/
 1. In the workspace: `mixenc init --repo repos/cloneA` writes `mixenc.json`.
 2. `mixenc sync` mirrors the repository and writes `mirror/cloneA/compile_commands.json`.
 3. `mixenc doctor` lists what needs doing (exit code 1 when something is broken).
-4. Start clangd with `--compile-commands-dir=<workspace>\mirror\cloneA` and the
-   `--path-mappings` value in `mirror\cloneA\.mixenc\repo.json` (`path_mappings`). The entry
-   (`mixenc clangd`, next stage) will do this for you.
+4. Point your editor's or agent's clangd at the entry, `mixenc clangd` (below). It syncs at every
+   start and while it runs, so `mixenc sync` by hand is only needed without it.
 
-Run `mixenc sync` again after changes; it reads only files whose size or time changed.
+## The clangd entry
+
+`mixenc clangd [clangd's arguments]` starts clangd on the mirror and stands between it and the
+client:
+
+- It finds the workspace from the folders the client opens (`mixenc.json` there or above), syncs,
+  and starts clangd with `--compile-commands-dir` (one repository) and `--path-mappings`. Without
+  a workspace it passes everything through to clangd.
+- Before a file is opened or saved, it mirrors that file. It watches the repositories and the
+  database, and syncs after a change has settled (a checkout, another tool).
+- A client that reads CP932 files as UTF-8 (agents' LSP clients do) sends the 0x5C trap along:
+  such a text is replaced with the mirror's, and from then on that client's columns are moved
+  between its reading and the mirror's, both ways (the lines are the same).
+- Files that are not mirrored are reported with `window/showMessage`; analysis goes on. If the
+  entry itself fails on a message, it passes that message through unchanged and says so.
+
+Which clangd it starts: `MIXENC_CLANGD`, else `"clangd"` in `mixenc.json`, else `clangd.exe` on
+`PATH`, else the one vscode-clangd installed.
+
+- **VS Code** (vscode-clangd): `"clangd.path": "C:\\Tools\\mixenc.exe"` and
+  `"clangd.arguments": ["clangd", "--background-index"]`.
+- **Copilot CLI**: in `~/.copilot/lsp-config.json`, `"command": "mixenc"`,
+  `"args": ["clangd", "--background-index"]`.
+- **Anything that runs `clangd`**: a copy of `mixenc.exe` named `clangd.exe`, earlier on `PATH` than
+  the real one, is the entry (it skips itself when it looks for clangd).
 
 ## Commands
 
@@ -80,6 +103,7 @@ Run `mixenc sync` again after changes; it reads only files whose size or time ch
 | `mixenc sync [--repo <name>]` | Mirror the repositories and their outside include folders, write the mirror databases |
 | `mixenc doctor [--limit N]` | Check everything, change nothing |
 | `mixenc judge <file>...` | Print the judgement of files |
+| `mixenc clangd [args]...` | The clangd entry (every argument goes on to clangd) |
 
 Common options: `-C <dir>` (as `git -C`), `--json`. Exit codes: `0` fine, `1` something to do
 (`sync`: a file could not be mirrored; `doctor`: something is broken), `2` an error.

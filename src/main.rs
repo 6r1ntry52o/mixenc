@@ -55,9 +55,29 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// The entry: start clangd on the mirror and stand between it and the client (set it as the
+    /// editor's clangd); every argument goes on to clangd
+    Clangd {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
+    // Named clangd.exe (a copy put where a tool looks for clangd), mixenc is the entry.
+    let named_clangd = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_stem().map(|s| s.eq_ignore_ascii_case("clangd")))
+        .unwrap_or(false);
+    if named_clangd {
+        return match mixenc::entry::run(std::env::args().skip(1).collect()) {
+            Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+            Err(err) => {
+                eprintln!("mixenc: {err:#}");
+                ExitCode::from(2)
+            }
+        };
+    }
     let cli = Cli::parse();
     match run(&cli) {
         Ok(code) => ExitCode::from(code),
@@ -107,6 +127,10 @@ fn run(cli: &Cli) -> Result<u8> {
                 print!("{}", report.to_text(*limit));
             }
             Ok(u8::from(report.summary.broken > 0))
+        }
+        Command::Clangd { args } => {
+            let code = mixenc::entry::run(args.clone())?;
+            Ok(u8::try_from(code).unwrap_or(1))
         }
         Command::Judge { files } => {
             let mut out = Vec::new();

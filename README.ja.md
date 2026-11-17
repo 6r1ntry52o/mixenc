@@ -29,8 +29,7 @@ mixenc はリポの**写し**を UTF-8 でリポの外に作ります（行と�
 - **長いパス。** 約 950 文字のパスでも動きます。clangd が索引を保存できない長い名前（235 文字以上）は、doctor が一覧に出します。
 - **何も外に出さない。** テレメトリも通信もありません。doctor の出力にはパスが入るので、作った PC の中に置いておきます。
 
-**状態: 5 段のうち段 1。** この版でできるのは、判定・写す・写しの DB・doctor の短い版です。これから作るものは次のとおりです。
-- 入口（`mixenc clangd`）：写しで clangd を起こし、エディタが送るものを差し替える
+**状態: 5 段のうち段 2。** この版でできるのは、判定・写す・写しの DB・doctor の短い版・入口（`mixenc clangd`）です。これから作るものは次のとおりです。
 - MCP の道具：解析と、原本を元の文字コードで書く道
 - Copilot のフックと、git の pre-commit の関所
 - VS Code 拡張
@@ -61,11 +60,26 @@ workspace/
 1. ワークスペースで `mixenc init --repo repos/cloneA` を実行すると、`mixenc.json` ができます。
 2. `mixenc sync` でリポを写し、`mirror/cloneA/compile_commands.json` を書きます。
 3. `mixenc doctor` で、すべきことの一覧が出ます（崩れがあれば終了コード 1）。
-4. clangd は次の 2 つを付けて起こします（次の段の入口 `mixenc clangd` が代わりに行います）。
-   - `--compile-commands-dir=<workspace>\mirror\cloneA`
-   - `--path-mappings`：値は `mirror\cloneA\.mixenc\repo.json` の `path_mappings`
+4. エディタやエージェントの clangd を、入口 `mixenc clangd` に向けます（下の節）。入口が起動のたびと動いている間に写すので、手で `mixenc sync` を実行するのは入口を使わない時だけです。
 
-変えた後は、もう一度 `mixenc sync` を実行します。大きさか更新日時が変わったファイルだけを読みます。
+## 入口（`mixenc clangd`）
+
+`mixenc clangd [clangd の引数]` は、写しで clangd を起こし、clangd とクライアントの間に立ちます。
+
+- クライアントが開いたフォルダ（とその上）の `mixenc.json` からワークスペースを見つけて写し、clangd を `--compile-commands-dir`（リポが 1 つの時）と `--path-mappings` 付きで起こします。ワークスペースが無ければ、全部をそのまま clangd に渡します。
+- ファイルを開く・保存する前に、そのファイルを写します。リポと DB を見張り、変更が落ち着いたら写します（checkout や別の道具での変更）。
+- CP932 のファイルを UTF-8 として読むクライアント（エージェントの LSP はそう読む）は、0x5C の罠ごと本文を送ってきます。その本文は写しの本文に差し替えます。それ以降、そのクライアントとの間では、列をクライアントの読み方と写しの読み方の間で読み替えます（行は同じ）。
+- 写せないファイルは `window/showMessage` で知らせ、解析は続けます。入口が自分であるメッセージに失敗した時は、そのメッセージをそのまま渡し、そのことを知らせます。
+
+起こす clangd は、次の順に探します。
+1. `MIXENC_CLANGD`
+2. `mixenc.json` の `"clangd"`
+3. `PATH` の `clangd.exe`
+4. vscode-clangd が入れたもの
+
+- **VS Code**（vscode-clangd）：`"clangd.path": "C:\\Tools\\mixenc.exe"` と `"clangd.arguments": ["clangd", "--background-index"]`。
+- **Copilot CLI**：`~/.copilot/lsp-config.json` に `"command": "mixenc"` と `"args": ["clangd", "--background-index"]`。
+- **`clangd` を起こすもの全般**：`mixenc.exe` を `clangd.exe` という名前で、本物より `PATH` の前に置くと入口になります（clangd を探す時は自分を飛ばします）。
 
 ## コマンド
 
@@ -75,6 +89,7 @@ workspace/
 | `mixenc sync [--repo <名前>]` | リポとリポの外の include を写し、写しの DB を書く |
 | `mixenc doctor [--limit N]` | 全部を確かめる（何も変えない） |
 | `mixenc judge <file>...` | ファイルの判定を出す |
+| `mixenc clangd [args]...` | 入口（引数は全部 clangd に渡す） |
 
 共通のオプションは `-C <dir>`（`git -C` と同じ）と `--json` です。終了コードは次のとおりです。
 - `0`：問題なし

@@ -36,6 +36,10 @@ pub struct Config {
     /// file outside it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, Override>,
+    /// The clangd the entry starts (default: `MIXENC_CLANGD`, else `clangd.exe` on PATH, else the
+    /// one vscode-clangd installed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clangd: Option<String>,
 }
 
 fn format_version() -> u32 {
@@ -254,6 +258,7 @@ pub fn init(root: &Path, repos: &[String], wiki: Option<&str>) -> Result<PathBuf
             .collect(),
         external: Vec::new(),
         overrides: BTreeMap::new(),
+        clangd: None,
     };
     let workspace = Workspace::new(root, config)?;
     for repo in workspace.repos() {

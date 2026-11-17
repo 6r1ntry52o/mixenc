@@ -5,18 +5,23 @@
 compile_error!("mixenc runs on Windows: it reads CP932 with Windows' own table");
 
 pub mod cmdline;
+pub mod colmap;
 pub mod config;
 pub mod convert;
 pub mod cp932;
 pub mod db;
 pub mod doctor;
+pub mod entry;
 pub mod fsx;
 pub mod git;
 pub mod index;
 pub mod judge;
+pub mod lsp;
 pub mod mirror;
 pub mod paths;
 pub mod sync;
 pub mod text;
 pub mod toolchain;
+pub mod translate;
+pub mod uri;
 mod win;

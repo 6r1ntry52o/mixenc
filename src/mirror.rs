@@ -113,6 +113,59 @@ pub fn sync(root: &Root, files: Vec<String>, read_as: &(dyn Fn(&Path) -> Option<
     Ok(outcome)
 }
 
+/// Mirrors only `files` (relative to the root, with `/`), as the entry does when an editor opens or
+/// saves one. A file that is no longer there loses its mirror; the other files are left alone.
+pub fn sync_files(
+    root: &Root,
+    files: &[String],
+    read_as: &(dyn Fn(&Path) -> Option<ReadAs> + Sync),
+) -> Result<Outcome> {
+    let state_dir = root.mirror.join(STATE_DIR);
+    fs::create_dir_all(&state_dir).with_context(|| format!("creating {}", paths::display(&state_dir)))?;
+    let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(state_dir.join("lock"))?;
+    lock.lock().context("waiting for another mixenc on this mirror")?;
+    let tmp = state_dir.join("tmp");
+
+    let mut index = Index::load(&root.mirror, &root.source);
+    let current = index.is_current();
+    let mut outcome = Outcome { files: files.len(), ..Outcome::default() };
+    let mut changed = false;
+    for rel in files.iter().filter(|f| !is_reserved(f)) {
+        match step(root, rel, index.files.get(rel), current, read_as, &tmp) {
+            Step::Unchanged => {}
+            Step::Gone => {
+                let target = paths::join_rel(&root.mirror, rel);
+                fsx::remove(&target).with_context(|| format!("removing {}", paths::display(&target)))?;
+                if index.files.remove(rel).is_some() {
+                    outcome.removed += 1;
+                    changed = true;
+                }
+            }
+            Step::State(state, kind) => {
+                match kind {
+                    Kind::Written => outcome.written += 1,
+                    Kind::Repaired => outcome.repaired += 1,
+                    Kind::Same => {}
+                }
+                if let Some(problem) = &state.problem {
+                    outcome.not_mirrored.push((rel.clone(), problem.clone()));
+                }
+                index.files.insert(rel.clone(), *state);
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        index.save(&root.mirror)?;
+    }
+    Ok(outcome)
+}
+
+/// What the index says about one file of a root.
+pub fn file_state(root: &Root, rel: &str) -> Option<FileState> {
+    Index::load(&root.mirror, &root.source).files.get(rel).cloned()
+}
+
 enum Step {
     Unchanged,
     /// The original is not a file any more.

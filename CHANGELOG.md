@@ -14,3 +14,15 @@ others to read (`mixenc.json`, `repo.json`, the doctor's `--json` report) carry 
   written), the mirror database (paths moved, response files written out, charset options taken
   out, invariant 6 checked), the include folders outside the repository, the toolchain scan, and
   the short doctor. Commands `init`, `sync`, `doctor` and `judge`.
+- Stage 2: the clangd entry, `mixenc clangd` (or mixenc.exe named `clangd.exe`): finds the
+  workspace from the client's folders, syncs, starts clangd on the mirror, mirrors files as they
+  are opened and saved, watches the repositories, replaces a text sent misread as UTF-8 with the
+  mirror's and moves that client's columns both ways, reports what is not mirrored, and passes a
+  message through when it fails on it.
+
+### Fixed
+
+- `--path-mappings` lists every root with an upper-case and a lower-case drive letter (clangd
+  matches the case; VS Code sends `c:`).
+- Paths written with 8.3 short names (`RUNNER~1`) and paths in another case than the disk's are
+  recognized as the same folders.

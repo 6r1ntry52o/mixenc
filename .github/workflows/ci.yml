@@ -32,8 +32,16 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 
+      - name: clangd
+        # LLVM comes with the runner image; the entry's end-to-end tests start its clangd.
+        shell: pwsh
+        run: '& "C:\Program Files\LLVM\bin\clangd.exe" --version'
+
       - name: Tests
         # The samples include a path of about 950 characters.
+        env:
+          MIXENC_REQUIRE_CLANGD: "1"
+          MIXENC_TEST_CLANGD: C:\Program Files\LLVM\bin\clangd.exe
         run: |
           git config --global core.longpaths true
           cargo test --locked --no-fail-fast
