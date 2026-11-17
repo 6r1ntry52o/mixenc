@@ -5,7 +5,9 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::Globalization::{MB_ERR_INVALID_CHARS, MultiByteToWideChar};
+use windows_sys::Win32::Globalization::{
+    MB_ERR_INVALID_CHARS, MultiByteToWideChar, WC_NO_BEST_FIT_CHARS, WideCharToMultiByte,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     FindClose, FindFirstFileW, GetLongPathNameW, GetShortPathNameW, WIN32_FIND_DATAW,
 };
@@ -18,6 +20,41 @@ pub fn cp932_pair(lead: u8, trail: u8) -> Option<u16> {
     // SAFETY: both buffers are valid for the lengths given.
     let written = unsafe { MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, bytes.as_ptr(), 2, wide.as_mut_ptr(), 2) };
     (written == 1).then_some(wide[0])
+}
+
+/// `text` in CP932 as Windows writes it (as Visual Studio saves a file: `Ⅰ` as NEC's `87 54`), or
+/// `None` when a character has no CP932 form. No best-fit character stands in (Windows would
+/// write a backslash for `¥`).
+pub fn cp932_encode(text: &str) -> Option<Vec<u8>> {
+    if text.is_empty() {
+        return Some(Vec::new());
+    }
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    let len = i32::try_from(wide.len()).ok()?;
+    let flags = WC_NO_BEST_FIT_CHARS;
+    // SAFETY: `wide` is valid for `len` units; a null output asks for the size.
+    let size = unsafe {
+        WideCharToMultiByte(
+            932,
+            flags,
+            wide.as_ptr(),
+            len,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        )
+    };
+    if size <= 0 {
+        return None;
+    }
+    let mut out = vec![0u8; size as usize];
+    let mut used_default = 0;
+    // SAFETY: `out` has room for `size` bytes and `used_default` is a valid BOOL.
+    let written = unsafe {
+        WideCharToMultiByte(932, flags, wide.as_ptr(), len, out.as_mut_ptr(), size, std::ptr::null(), &mut used_default)
+    };
+    (written == size && used_default == 0).then_some(out)
 }
 
 /// `LongPathsEnabled` under `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`: `Some(true)` when

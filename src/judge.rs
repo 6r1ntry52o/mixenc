@@ -199,26 +199,49 @@ fn has_iso2022jp_escape(bytes: &[u8]) -> bool {
     [&b"\x1B$@"[..], b"\x1B$B", b"\x1B(J", b"\x1B(I"].iter().any(|seq| bytes.windows(seq.len()).any(|w| w == *seq))
 }
 
-fn by_lines(bytes: &[u8]) -> Encoding {
-    if bytes.is_ascii() {
-        return Encoding::Ascii;
+/// How the non-ASCII lines of a file (without its BOM) read. A line that reads both ways counts as
+/// UTF-8 when its UTF-8 reading has a character from U+0800 up, and in neither count otherwise.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LineCounts {
+    pub utf8: usize,
+    pub cp932: usize,
+    /// Lines that read neither as UTF-8 nor as CP932.
+    pub neither: usize,
+    /// A CP932 pair starts with `0x81`-`0x9F` (kana and most symbols), which EUC-JP text never has.
+    pub low_lead: bool,
+}
+
+impl LineCounts {
+    /// The lines of the encoding a mixed file has fewer of.
+    pub fn minority(&self) -> usize {
+        self.utf8.min(self.cp932)
     }
-    let (mut utf8, mut cp932, mut neither) = (0usize, 0usize, 0usize);
-    let mut low_lead = false;
+}
+
+pub fn line_counts(bytes: &[u8]) -> LineCounts {
+    let mut counts = LineCounts::default();
     for (line, _) in text::split_lines(bytes) {
         if line.is_ascii() {
             continue;
         }
         let check = cp932::check_line(line);
-        low_lead |= check.ok && check.low_lead;
+        counts.low_lead |= check.ok && check.low_lead;
         match (std::str::from_utf8(line), check.ok) {
-            (Ok(_), false) => utf8 += 1,
-            (Ok(s), true) if s.chars().any(|c| c >= '\u{800}') => utf8 += 1,
+            (Ok(_), false) => counts.utf8 += 1,
+            (Ok(s), true) if s.chars().any(|c| c >= '\u{800}') => counts.utf8 += 1,
             (Ok(_), true) => {}
-            (Err(_), true) => cp932 += 1,
-            (Err(_), false) => neither += 1,
+            (Err(_), true) => counts.cp932 += 1,
+            (Err(_), false) => counts.neither += 1,
         }
     }
+    counts
+}
+
+fn by_lines(bytes: &[u8]) -> Encoding {
+    if bytes.is_ascii() {
+        return Encoding::Ascii;
+    }
+    let LineCounts { utf8, cp932, neither, low_lead } = line_counts(bytes);
     if neither > 0 {
         return if is_euc_jp(bytes) { Encoding::EucJp } else { Encoding::Broken };
     }

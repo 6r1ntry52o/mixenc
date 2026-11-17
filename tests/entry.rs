@@ -234,6 +234,26 @@ impl Client {
         }
     }
 
+    /// `textDocument/definition` until a location `wanted` takes is among the answers: clangd
+    /// answers with the declaration in the open file before its background index has the
+    /// definition in a file that is not open.
+    fn definition_until(
+        &mut self,
+        doc: &str,
+        line: usize,
+        character: usize,
+        wanted: impl Fn(&Value) -> bool,
+    ) -> Vec<Value> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let found = self.definition(doc, line, character);
+            if found.iter().any(&wanted) || Instant::now() > deadline {
+                return found;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
     fn stop(mut self) {
         self.request("shutdown", Value::Null);
         self.notify("exit", Value::Null);
@@ -283,7 +303,7 @@ fn a_client_that_reads_cp932_right() {
     let ext = c.definition(&a, 4, column(&text, 4, "ext_hidden"));
     assert!(in_original(&ext[0], "ext_hidden.h"), "{ext:?}");
     // only_b is defined in b.cpp, which is not open: the background index read its mirror.
-    let only_b = c.definition(&a, 4, column(&text, 4, "only_b"));
+    let only_b = c.definition_until(&a, 4, column(&text, 4, "only_b"), |l| in_original(l, "b.cpp"));
     assert!(only_b.iter().any(|l| in_original(l, "b.cpp")), "{only_b:?}");
     c.stop();
 }

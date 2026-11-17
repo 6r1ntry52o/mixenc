@@ -215,6 +215,16 @@ fn parse(args: &[String]) -> Vec<Arg<'_>> {
 }
 
 /// Response files (`@file`, relative to `directory`) written out into the arguments.
+/// Whether the entry compiles its sources as UTF-8 (`/utf-8` or `/source-charset:utf-8`, in its
+/// arguments or its response files).
+pub fn compiles_as_utf8(e: &Entry) -> bool {
+    let directory = paths::long_form(&e.directory);
+    expand_response_files(&e.arguments, &directory, &mut Vec::new()).iter().any(|arg| {
+        let arg = arg.to_ascii_lowercase();
+        matches!(arg.strip_prefix(['/', '-']), Some("utf-8" | "source-charset:utf-8" | "source-charset:.65001"))
+    })
+}
+
 fn expand_response_files(args: &[String], directory: &str, problems: &mut Vec<String>) -> Vec<String> {
     let mut out = Vec::new();
     for arg in args {

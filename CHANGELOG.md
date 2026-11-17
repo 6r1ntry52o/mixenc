@@ -22,6 +22,18 @@ others to read (`mixenc.json`, `repo.json`, the doctor's `--json` report) carry 
 
 - The entry's log, `mirror\.mixenc\entry.log`: how documents came, diagnostics counts, where
   definitions and references lead.
+- Stage 3: the front gate, `mixenc edit` and the MCP server `mixenc mcp` (tools `edit` and
+  `create`): replaces text in a file of the workspace and writes it back in its own encoding,
+  encoding only the lines whose text changed; a mixed file's lines keep their encodings; a file
+  with no non-ASCII text so far gets the encoding the files around it use; characters the encoding
+  has no form for stop the edit with their lines; a mirror's path stands for its original; what is
+  written must read back as asked and pass the commit gate's check, and the original must not have
+  changed since it was read.
+- Stage 3: the commit gate, `mixenc hooks install|uninstall|status|pre-commit`: a git pre-commit
+  that stops a commit when a staged file's encoding changed, a line whose text did not change got
+  other bytes (`Ⅰ` in NEC's form instead of IBM's, CRLF to LF), a mixed or broken file got worse,
+  or non-ASCII text came into a file in a form MSVC misreads. A pre-commit already there runs
+  first; with `core.hooksPath` set nothing is installed. The doctor says whether it is installed.
 
 ### Fixed
 
@@ -31,3 +43,5 @@ others to read (`mixenc.json`, `repo.json`, the doctor's `--json` report) carry 
   right are no longer moved.
 - Paths written with 8.3 short names (`RUNNER~1`) and paths in another case than the disk's are
   recognized as the same folders.
+- The entry's test waits for the background index to find a definition in a file that is not
+  open (clangd answers with the declaration in the open file first).

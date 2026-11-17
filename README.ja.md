@@ -29,9 +29,9 @@ mixenc はリポの**写し**を UTF-8 でリポの外に作ります（行と�
 - **長いパス。** 約 950 文字のパスでも動きます。clangd が索引を保存できない長い名前（235 文字以上）は、doctor が一覧に出します。
 - **何も外に出さない。** テレメトリも通信もありません。doctor の出力にはパスが入るので、作った PC の中に置いておきます。
 
-**状態: 5 段のうち段 2。** この版でできるのは、判定・写す・写しの DB・doctor の短い版・入口（`mixenc clangd`）です。これから作るものは次のとおりです。
-- MCP の道具：解析と、原本を元の文字コードで書く道
-- Copilot のフックと、git の pre-commit の関所
+**状態: 5 段のうち段 3。** この版でできるのは、判定・写す・写しの DB・doctor の短い版・入口（`mixenc clangd`）・正門（`mixenc edit` と、原本を元の文字コードで書く MCP の道具）・commit の関所（git の pre-commit）です。これから作るものは次のとおりです。
+- 解析の道具と解析エージェント
+- Copilot のフック
 - VS Code 拡張
 
 ## 要るもの
@@ -61,6 +61,7 @@ workspace/
 2. `mixenc sync` でリポを写し、`mirror/cloneA/compile_commands.json` を書きます。
 3. `mixenc doctor` で、すべきことの一覧が出ます（崩れがあれば終了コード 1）。
 4. エディタやエージェントの clangd を、入口 `mixenc clangd` に向けます（下の節）。入口が起動のたびと動いている間に写すので、手で `mixenc sync` を実行するのは入口を使わない時だけです。
+5. エージェントに正門の MCP の道具を渡し、commit の関所を入れます（`mixenc hooks install`）。
 
 ## 入口（`mixenc clangd`）
 
@@ -88,6 +89,37 @@ workspace/
 - **Copilot CLI**：`~/.copilot/lsp-config.json` に `"command": "mixenc"` と `"args": ["clangd", "--background-index"]`。
 - **`clangd` を起こすもの全般**：`mixenc.exe` を `clangd.exe` という名前で、本物より `PATH` の前に置くと入口になります（clangd を探す時は自分を飛ばします）。
 
+## 正門（`mixenc edit`・`mixenc mcp`）
+
+CP932 のファイルを Unicode を通して読み書きするエディタやエージェントは、頼まれていないバイトまで変えます。`Ⅰ`・`№`・`㈱` には NEC と IBM の 2 つの形があり、違う文字コードで読んだファイルは壊れて戻ります。正門は、エージェントが原本を書くための道です。ファイルの文字を置き換え、そのファイルの文字コードのまま書き戻します。
+
+- 符号化するのは文字が変わった行だけです（CP932 は Visual Studio と同じ形）。ほかの行はバイトも改行もそのままです。混在のファイルは、変えた行はその行の文字コード、足した行はファイルの多い方の文字コードで書きます。
+- 非 ASCII がまだ無いファイルは、周りのファイルに倣います。倣う先は DB の同じプロジェクト、無ければ同じフォルダ、無ければリポ全体です。その中の `cp932`・`utf8-bom`・`utf8` で一番多いものにします（同数は `cp932`）。BOM の無い UTF-8 は、プロジェクトが `/utf-8` でビルドする時だけです。それが一番多いのに `/utf-8` が無い時は、人に決めてもらうよう返します。
+- その文字コードに無い字（CP932 の `😀` など）は止めて、字と行を返します。JIS と CP932 で違う字（`〜` など）は、CP932 の字も添えます。
+- 写しのパスは原本を指します。置き換える文字はファイルに 1 か所だけある必要があります。改行は `\n` で渡せます。
+- 書く前に、結果が頼まれた文字として読み戻せること・commit の関所の確かめを通ること・読んだ時から原本が変わっていないことを確かめます。書いた後に写しを合わせます。
+
+`mixenc mcp` は、これを VS Code の Copilot と Copilot CLI 向けの MCP の道具 2 つとして出します。`edit`（path・old_string・new_string）と `create`（path・content）です。
+
+- **VS Code**：`mcp.json`（MCP: Open User Configuration）に `"servers": { "mixenc": { "type": "stdio", "command": "C:\\Tools\\mixenc.exe", "args": ["mcp"] } }`。
+- **Copilot CLI**：`copilot mcp add mixenc -- mixenc mcp`。
+
+コマンドからは `mixenc edit <file> --old <文字> --new <文字>`（`--old-file`・`--new-file`・`--create` もある）で同じことができます。
+
+## commit の関所（`mixenc hooks`）
+
+`mixenc hooks install` で、ワークスペースの各リポに git の pre-commit を入れます。ステージしたファイルごとに、HEAD と比べて次を確かめます。
+
+- 文字コードが変わっていない（`cp932` が `utf8` になっていない）。非 ASCII がまだ無かったファイルは、そこで MSVC が正しく読む形だけ通す（上と同じ）
+- 文字が変わっていない行は、改行まで含めてバイトが同じ（`Ⅰ FA 4A -> 87 54` を止める）
+- 混在・壊れのファイルで、少ない方の文字コードの行と、どの文字コードでも読めない行が増えていない
+
+止める時は、ファイル・行・何が変わったかを出します。commit を書き換えることはしません。人の保存も AI の書き込みも同じに止まります。clone の外には何も触りません（git は `.git/hooks` を push しない）。
+
+- 既にある pre-commit は残し（`pre-commit.before-mixenc` に名前を変える）、先に呼びます。それが通った時だけ関所が見ます。`mixenc hooks uninstall` で元に戻ります。
+- `core.hooksPath` が設定されている時（フックをほかで管理している）は入れません。doctor がそのことを出します。
+- 人が意図した変更は `git commit --no-verify` で通せます。
+
 ## コマンド
 
 | コマンド | すること |
@@ -97,10 +129,14 @@ workspace/
 | `mixenc doctor [--limit N]` | 全部を確かめる（何も変えない） |
 | `mixenc judge <file>...` | ファイルの判定を出す |
 | `mixenc clangd [args]...` | 入口（引数は全部 clangd に渡す） |
+| `mixenc edit <file> --old <文字> --new <文字> [--encoding E]` | 正門：文字コードを保って置き換える（`--create` で新しいファイル） |
+| `mixenc mcp` | 正門の道具を MCP サーバとして出す（標準入出力） |
+| `mixenc hooks install\|uninstall\|status [--repo <名前>]` | 各リポの commit の関所 |
+| `mixenc hooks pre-commit` | ステージしたファイルを確かめる（pre-commit が呼ぶ） |
 
 共通のオプションは `-C <dir>`（`git -C` と同じ）と `--json` です。終了コードは次のとおりです。
 - `0`：問題なし
-- `1`：すべきことがある（`sync` は写せないファイルがあった時、`doctor` は崩れがある時）
+- `1`：すべきことがある（`sync` は写せないファイルがあった時、`doctor` は崩れがある時、`hooks` は `core.hooksPath` で入れなかった時、`hooks pre-commit` は commit を止めた時）
 - `2`：エラー
 
 ## `mixenc.json`

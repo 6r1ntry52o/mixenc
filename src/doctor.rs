@@ -15,7 +15,7 @@ use crate::index::{Index, Problem};
 use crate::judge::Encoding;
 use crate::mirror::{self, Root};
 use crate::sync::RepoState;
-use crate::{fsx, git, paths, toolchain};
+use crate::{fsx, git, hooks, paths, toolchain};
 
 pub const FORMAT_VERSION: u32 = 1;
 /// clangd names an index shard `<file name>.<16 hex digits>.idx`; NTFS allows 255 characters.
@@ -137,7 +137,37 @@ fn check_repo(d: &mut Doctor, repo: &RepoPaths) -> usize {
             Vec::new(),
         );
     }
+    check_commit_gate(d, repo);
     long_paths
+}
+
+fn check_commit_gate(d: &mut Doctor, repo: &RepoPaths) {
+    match hooks::status(&repo.source) {
+        Ok(hooks::Status::Installed { .. }) => {
+            d.add(Severity::Ok, "commit-gate", "the commit gate (pre-commit) is installed".into(), None, Vec::new());
+        }
+        Ok(hooks::Status::Missing { .. }) => d.add(
+            Severity::Notice,
+            "commit-gate",
+            "the commit gate (pre-commit) is not installed".into(),
+            Some("mixenc hooks install"),
+            Vec::new(),
+        ),
+        Ok(hooks::Status::HooksPath(p)) => d.add(
+            Severity::Notice,
+            "commit-gate",
+            format!("core.hooksPath is set ({p}), so mixenc does not install its pre-commit"),
+            Some("if those hooks are yours, run `mixenc hooks pre-commit` from their pre-commit"),
+            Vec::new(),
+        ),
+        Err(err) => d.add(
+            Severity::Notice,
+            "commit-gate",
+            format!("cannot tell whether the commit gate is installed: {err:#}"),
+            None,
+            Vec::new(),
+        ),
+    }
 }
 
 fn check_root(d: &mut Doctor, root: &Root, is_repo: bool) -> usize {

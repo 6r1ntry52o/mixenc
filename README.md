@@ -33,10 +33,10 @@ and agents keep working on the originals, in their own encodings.
 - **Nothing leaves your machine.** No telemetry, no network access. The doctor's report has paths
   in it; it stays where it is made.
 
-**Status: stage 2 of 5.** This version judges, mirrors, writes the mirror database, runs the
-short doctor, and has the clangd entry (`mixenc clangd`). Still to come: the MCP tools (analysis,
-and writing originals in their own encoding), the Copilot hooks and git pre-commit gate, and the
-VS Code extension.
+**Status: stage 3 of 5.** This version judges, mirrors, writes the mirror database, runs the
+short doctor, has the clangd entry (`mixenc clangd`), the front gate (`mixenc edit` and the MCP
+tools that write originals in their own encoding) and the commit gate (a git pre-commit). Still
+to come: the analysis tools and agent, the Copilot hooks, and the VS Code extension.
 
 ## Requirements
 
@@ -68,6 +68,7 @@ workspace/
 3. `mixenc doctor` lists what needs doing (exit code 1 when something is broken).
 4. Point your editor's or agent's clangd at the entry, `mixenc clangd` (below). It syncs at every
    start and while it runs, so `mixenc sync` by hand is only needed without it.
+5. Give agents the front gate's MCP tools, and install the commit gate: `mixenc hooks install`.
 
 ## The clangd entry
 
@@ -100,6 +101,58 @@ files misread as UTF-8 (measured); the entry replaces them.
 - **Anything that runs `clangd`**: a copy of `mixenc.exe` named `clangd.exe`, earlier on `PATH` than
   the real one, is the entry (it skips itself when it looks for clangd).
 
+## The front gate (`mixenc edit`, `mixenc mcp`)
+
+An editor or an agent that reads a CP932 file through Unicode and writes it back changes bytes it
+was never asked to: `Ⅰ`, `№` and `㈱` have an NEC and an IBM form, and a file read in the wrong
+encoding comes back broken. The front gate is how an agent writes an original instead: it replaces
+text in a file and writes the file back in its own encoding.
+
+- Only the lines whose text changed are encoded (as Visual Studio writes CP932); every other line
+  keeps its bytes and its line break. A mixed file's changed lines keep their line's encoding, and
+  its new lines get the encoding most of its lines are in.
+- A file with no non-ASCII text so far gets the encoding the files around it use: those of the same
+  project in the database, else the same folder, else the repository; the most common of `cp932`,
+  `utf8-bom` and `utf8` (a tie: `cp932`). UTF-8 without a BOM only where the project compiles with
+  `/utf-8`; where it is the most common without that, the tool asks for a person's decision.
+- A character the encoding has no form for (`😀` in CP932) stops the edit and is named with its
+  line; for the characters JIS and CP932 map apart (`〜`), the CP932 one is named too.
+- A path in the mirror stands for its original. The text to replace must be in the file once; line
+  breaks may be given as `\n`.
+- Before anything is written, the result must read back as the text asked for and pass the commit
+  gate's check, and the original must be as it was when it was read. The mirror follows.
+
+`mixenc mcp` serves this as two MCP tools, `edit` (path, old_string, new_string) and `create`
+(path, content), for VS Code's Copilot and Copilot CLI:
+
+- **VS Code**: in `mcp.json` (MCP: Open User Configuration),
+  `"servers": { "mixenc": { "type": "stdio", "command": "C:\\Tools\\mixenc.exe", "args": ["mcp"] } }`.
+- **Copilot CLI**: `copilot mcp add mixenc -- mixenc mcp`.
+
+`mixenc edit <file> --old <text> --new <text>` (or `--old-file`/`--new-file`, `--create`) does the
+same from the command line.
+
+## The commit gate (`mixenc hooks`)
+
+`mixenc hooks install` puts a git pre-commit into each repository of the workspace. For every
+staged file it checks, against HEAD:
+
+- the encoding stays (a `cp932` file does not become `utf8`); a file with no non-ASCII text so far
+  may get only a form MSVC reads right where it is (as above);
+- a line whose text did not change keeps its bytes, line break included (`Ⅰ FA 4A -> 87 54`);
+- a mixed or broken file gets no more lines of the encoding it has fewer of, and no more lines
+  that read in no encoding.
+
+It stops the commit and says which file, which line and what changed; it never changes a commit.
+People's saves and agents' writes meet it alike. It touches nothing outside the clone (git does not
+push `.git/hooks`):
+
+- A pre-commit already there is kept (renamed `pre-commit.before-mixenc`) and runs first; the gate
+  looks only when it passed. `mixenc hooks uninstall` puts it back.
+- With `core.hooksPath` set (the hooks are managed elsewhere), nothing is installed; the doctor
+  says so.
+- `git commit --no-verify` skips the gate when a person means the change.
+
 ## Commands
 
 | Command | What it does |
@@ -109,9 +162,14 @@ files misread as UTF-8 (measured); the entry replaces them.
 | `mixenc doctor [--limit N]` | Check everything, change nothing |
 | `mixenc judge <file>...` | Print the judgement of files |
 | `mixenc clangd [args]...` | The clangd entry (every argument goes on to clangd) |
+| `mixenc edit <file> --old <text> --new <text> [--encoding E]` | The front gate: replace text, keeping the file's encoding (`--create` writes a new file) |
+| `mixenc mcp` | The front gate's tools as an MCP server on stdin and stdout |
+| `mixenc hooks install\|uninstall\|status [--repo <name>]` | The commit gate in each repository |
+| `mixenc hooks pre-commit` | Check the staged files (what the pre-commit runs) |
 
 Common options: `-C <dir>` (as `git -C`), `--json`. Exit codes: `0` fine, `1` something to do
-(`sync`: a file could not be mirrored; `doctor`: something is broken), `2` an error.
+(`sync`: a file could not be mirrored; `doctor`: something is broken; `hooks`: not installed
+because of `core.hooksPath`; `hooks pre-commit`: the commit is stopped), `2` an error.
 
 ## `mixenc.json`
 

@@ -94,22 +94,28 @@ pub fn decode_line(line: &[u8], out: &mut String) -> bool {
     }
     let mut ok = true;
     for unit in units(line) {
-        let c = match unit {
-            Unit::Single(b) if b < 0x80 => char::from(b),
-            // Half-width katakana: A1-DF is U+FF61-U+FF9F.
-            Unit::Single(b) => char::from_u32(0xFF61 + u32::from(b - 0xA1)).unwrap_or(REPLACEMENT),
-            Unit::Pair(lead, trail) => pair(lead, trail).unwrap_or_else(|| {
-                ok = false;
-                REPLACEMENT
-            }),
-            Unit::Invalid(_) => {
-                ok = false;
-                REPLACEMENT
-            }
-        };
-        out.push(c);
+        out.push(unit_char(unit).unwrap_or_else(|| {
+            ok = false;
+            REPLACEMENT
+        }));
     }
     ok
+}
+
+/// The character of a unit, or `None` for one without a mapping.
+pub fn unit_char(unit: Unit) -> Option<char> {
+    match unit {
+        Unit::Single(b) if b < 0x80 => Some(char::from(b)),
+        // Half-width katakana: A1-DF is U+FF61-U+FF9F.
+        Unit::Single(b) => char::from_u32(0xFF61 + u32::from(b.wrapping_sub(0xA1))),
+        Unit::Pair(lead, trail) => pair(lead, trail),
+        Unit::Invalid(_) => None,
+    }
+}
+
+/// The length of a unit in bytes.
+pub fn unit_len(unit: Unit) -> usize {
+    if matches!(unit, Unit::Pair(..)) { 2 } else { 1 }
 }
 
 /// Whether the line, read as CP932, ends with a backslash, allowing spaces and tabs after it (clang

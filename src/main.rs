@@ -8,7 +8,7 @@ use serde_json::json;
 use mixenc::config::{self, Workspace};
 use mixenc::index::Problem;
 use mixenc::mirror::Outcome;
-use mixenc::{convert, doctor, judge, paths, sync};
+use mixenc::{convert, doctor, edit, hooks, judge, mcp, paths, sync};
 
 #[derive(Parser)]
 #[command(
@@ -61,6 +61,59 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// The front gate: replace text in a file of the workspace (or write a new one) in the file's
+    /// own encoding, keeping every other line's bytes (what the MCP tools edit and create do)
+    Edit {
+        /// The file: the original, or its mirror
+        path: PathBuf,
+        /// The text to replace (it must be in the file once)
+        #[arg(long, conflicts_with_all = ["old_file", "create"])]
+        old: Option<String>,
+        /// Read the text to replace from this UTF-8 file
+        #[arg(long, value_name = "FILE", conflicts_with = "create")]
+        old_file: Option<PathBuf>,
+        /// The text to put in its place (or the new file's text)
+        #[arg(long, conflicts_with = "new_file")]
+        new: Option<String>,
+        /// Read the new text from this UTF-8 file
+        #[arg(long, value_name = "FILE")]
+        new_file: Option<PathBuf>,
+        /// Write a new file
+        #[arg(long)]
+        create: bool,
+        /// For a file with no non-ASCII text so far: cp932, utf8-bom or utf8
+        #[arg(long)]
+        encoding: Option<String>,
+    },
+    /// Serve the front gate's tools (edit, create) as an MCP server on stdin and stdout
+    Mcp,
+    /// The commit gate: a git pre-commit in each repository of the workspace
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum HooksCommand {
+    /// Install the pre-commit (a pre-commit already there is kept and runs first)
+    Install {
+        /// Only this repository (its name in mixenc.json)
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Remove the pre-commit and put back the one that was there before
+    Uninstall {
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Show whether the pre-commit is installed
+    Status {
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Check the staged files (what the pre-commit runs)
+    PreCommit,
 }
 
 fn main() -> ExitCode {
@@ -132,6 +185,41 @@ fn run(cli: &Cli) -> Result<u8> {
             let code = mixenc::entry::run(args.clone())?;
             Ok(u8::try_from(code).unwrap_or(1))
         }
+        Command::Edit { path, old, old_file, new, new_file, create, encoding } => {
+            let path = if path.is_absolute() { path.clone() } else { dir.join(path) };
+            let encoding =
+                encoding.as_deref().map(str::parse::<judge::Encoding>).transpose().map_err(anyhow::Error::msg)?;
+            let new = text_arg(new, new_file)?.ok_or_else(|| anyhow::anyhow!("--new or --new-file is needed"))?;
+            let outcome = if *create {
+                edit::create(&path, &new, encoding)?
+            } else {
+                let old = text_arg(old, old_file)?
+                    .ok_or_else(|| anyhow::anyhow!("--old or --old-file is needed (or --create)"))?;
+                edit::replace(&path, &old, &new, encoding)?
+            };
+            if cli.json {
+                let (first, last) = outcome.lines.unzip();
+                println!(
+                    "{}",
+                    json!({
+                        "path": paths::display(&outcome.path),
+                        "encoding": outcome.encoding.name(),
+                        "first_line": first,
+                        "last_line": last,
+                        "removed": outcome.removed,
+                        "notes": outcome.notes,
+                    })
+                );
+            } else {
+                println!("{}", outcome.summary());
+            }
+            Ok(0)
+        }
+        Command::Mcp => {
+            mcp::serve()?;
+            Ok(0)
+        }
+        Command::Hooks { command } => run_hooks(cli, &dir, command),
         Command::Judge { files } => {
             let mut out = Vec::new();
             for file in files {
@@ -159,6 +247,80 @@ fn run(cli: &Cli) -> Result<u8> {
             Ok(0)
         }
     }
+}
+
+/// A text given on the command line, or read from a UTF-8 file.
+fn text_arg(text: &Option<String>, file: &Option<PathBuf>) -> Result<Option<String>> {
+    match (text, file) {
+        (Some(text), _) => Ok(Some(text.clone())),
+        (None, Some(file)) => {
+            let bytes = std::fs::read(file).map_err(|e| anyhow::anyhow!("{}: {e}", paths::display(file)))?;
+            let bytes = bytes.strip_prefix(mixenc::text::UTF8_BOM).unwrap_or(&bytes).to_vec();
+            String::from_utf8(bytes).map(Some).map_err(|_| anyhow::anyhow!("{} is not UTF-8", paths::display(file)))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+fn run_hooks(cli: &Cli, dir: &std::path::Path, command: &HooksCommand) -> Result<u8> {
+    let only = match command {
+        HooksCommand::PreCommit => {
+            return match hooks::check_staged(dir) {
+                Ok(stopped) if stopped.is_empty() => Ok(0),
+                Ok(stopped) => {
+                    eprint!("{}", hooks::report(&stopped));
+                    Ok(1)
+                }
+                Err(err) => {
+                    eprintln!("mixenc pre-commit: the commit gate could not check this commit: {err:#}");
+                    eprintln!("(git commit --no-verify skips the gate)");
+                    Ok(2)
+                }
+            };
+        }
+        HooksCommand::Install { repo } | HooksCommand::Uninstall { repo } | HooksCommand::Status { repo } => repo,
+    };
+    let ws = Workspace::find(dir)?;
+    let repos: Vec<_> =
+        ws.repos().into_iter().filter(|r| only.as_deref().is_none_or(|n| r.name.eq_ignore_ascii_case(n))).collect();
+    if repos.is_empty() {
+        anyhow::bail!("no repository {} in {}", only.as_deref().unwrap_or(""), paths::display(&ws.file()));
+    }
+    let exe = std::env::current_exe()?;
+    let mut code = 0;
+    let mut out = Vec::new();
+    for repo in &repos {
+        let status = match command {
+            HooksCommand::Install { .. } => hooks::install(&repo.source, &exe)?,
+            HooksCommand::Uninstall { .. } => hooks::uninstall(&repo.source)?,
+            _ => hooks::status(&repo.source)?,
+        };
+        let text = match &status {
+            hooks::Status::Installed { chained: true } => {
+                "installed (the pre-commit that was there before runs first)".to_string()
+            }
+            hooks::Status::Installed { chained: false } => "installed".to_string(),
+            hooks::Status::Missing { other: true } => "not installed (another pre-commit is there)".to_string(),
+            hooks::Status::Missing { other: false } => "not installed".to_string(),
+            hooks::Status::HooksPath(p) => {
+                code = 1;
+                format!("not installed: core.hooksPath is set ({p}), so the hooks are managed there")
+            }
+        };
+        out.push((repo.name.clone(), matches!(status, hooks::Status::Installed { .. }), text));
+    }
+    if cli.json {
+        let repos: Vec<_> = out
+            .iter()
+            .map(|(name, installed, text)| json!({ "name": name, "installed": installed, "status": text }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json!({ "repos": repos }))?);
+    } else {
+        for (name, _, text) in &out {
+            println!("{name}: {text}");
+        }
+    }
+    Ok(code)
 }
 
 fn print_sync(ws: &Workspace, results: &[sync::RepoSync], json: bool) {
