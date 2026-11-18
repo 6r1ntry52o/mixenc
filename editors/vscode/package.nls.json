@@ -1,11 +1,13 @@
 {
   "description": "Shows a C/C++ repository whose files mix Shift_JIS (CP932), UTF-8 and other encodings right: opens each file in its encoding, keeps mixenc's mirror up to date, and says only when something is wrong.",
-  "command.createWorkspace": "Create a workspace",
+  "command.addRepository": "Add a repository to this window",
   "command.diagnose": "Diagnose",
   "command.diagnoseDeep": "Diagnose deeply (clangd on every translation unit)",
   "command.rebuild": "Mirror everything again",
-  "command.openConfig": "Open mixenc.json (the override table)",
-  "config.path": "The mixenc executable (default: mixenc on PATH). The workspace mixenc writes sets it.",
-  "config.workspace": "The folder that holds mixenc.json. The workspace mixenc writes sets it; otherwise the folders and those above them are searched.",
-  "untrusted": "In a workspace you have not trusted, mixenc runs from PATH, not from the workspace's setting."
+  "command.openConfig": "Open the settings file (the override table)",
+  "config.path": "The mixenc executable (default: mixenc on PATH). `mixenc workspace` sets it.",
+  "config.workspace": "The folder that holds mixenc.json (older; mixenc.configs replaces it).",
+  "untrusted": "In a workspace you have not trusted, mixenc runs from PATH, not from the workspace's setting.",
+  "config.configs": "The settings files this window uses (mixenc.json or <name>.mixenc.json, relative to the .code-workspace or absolute; one per repository is the usual). `mixenc workspace` adds them.",
+  "config.workspace.deprecated": "Use mixenc.configs (`mixenc workspace` writes it)."
 }

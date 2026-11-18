@@ -1,5 +1,6 @@
-//! Stage 5's commands end to end on the sample: the `.code-workspace`, the file list the extension
-//! reads, the override table, reading a file another way, the deep doctor and a full rebuild.
+//! Stage 5's and 6's commands end to end on the sample: the `.code-workspace`, the file list the
+//! extension reads, the override table, reading a file another way, the deep doctor, a full rebuild,
+//! and settings files kept in a vault in git with the mirrors outside it.
 
 mod common;
 
@@ -23,13 +24,12 @@ fn the_code_workspace_points_clangd_at_the_entry() {
     let written = json_of(s.mixenc(&s.ws, &["workspace", "--json"], None));
     let path = written["path"].as_str().unwrap();
     assert!(path.ends_with("r1.code-workspace"), "{path}");
-    let text = fs::read_to_string(path).unwrap();
-    assert!(text.starts_with(mixenc::codews::MARKER));
-    let v: Value = serde_json::from_str(text.split_once('\n').unwrap().1).unwrap();
+    let v: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     let exe = mixenc::paths::forward(
         &mixenc::paths::canonical(std::path::Path::new(env!("CARGO_BIN_EXE_mixenc"))).to_string_lossy(),
     );
     assert_eq!(v["folders"], json!([{ "name": "r1", "path": "repos/r1" }]));
+    assert_eq!(v["settings"]["mixenc.configs"], json!(["mixenc.json"]));
     assert_eq!(v["settings"]["clangd.path"].as_str().map(str::to_lowercase), Some(exe.to_lowercase()));
     assert_eq!(v["settings"]["C_Cpp.intelliSenseEngine"], "disabled");
     assert_eq!(v["extensions"]["recommendations"], json!(mixenc::codews::RECOMMENDED));
@@ -171,4 +171,125 @@ fn a_workspace_kept_elsewhere_is_found_from_its_repository() {
     assert_eq!(fs::read_to_string(home.join("mirror").join("r2").join("a.cpp")).unwrap(), "// 表\r\nint a;\r\n");
     let files = json_of(s.mixenc(&repo, &["files", "--json"], None));
     assert_eq!(files["files"][0]["judged"], "cp932");
+}
+
+/// Stage 6: settings files in a vault kept in git, one per repository; the mirrors outside it; the
+/// person's .code-workspace gets mixenc's items.
+#[test]
+fn settings_in_a_vault_and_mirrors_outside_it() {
+    let s = Sample::new();
+    let base = s.ws.parent().unwrap().to_path_buf();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let mut repos = Vec::new();
+    for name in ["r2", "r3"] {
+        let repo = base.join("plain").join(name);
+        common::write(&repo.join("a.cpp"), &common::sjis(&format!("// 表 {name}\r\nint a;\r\n")));
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["add", "-A"]);
+        repos.push(repo);
+    }
+    let vault = base.join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    git(&vault, &["init", "-q"]);
+
+    // Without --mirror the mirrors would be in the vault's git: refused.
+    let refused = s.mixenc(&base, &["init", "--config", "vault/r2.mixenc.json", "--repo", "plain/r2"], None);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("git work tree"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(!vault.join("r2.mixenc.json").exists());
+    for name in ["r2", "r3"] {
+        let file = format!("vault/{name}.mixenc.json");
+        let repo = format!("plain/{name}");
+        ok(s.mixenc(&base, &["init", "--config", &file, "--repo", &repo, "--mirror", "mirror2"], None));
+    }
+    let config: Value = serde_json::from_slice(&fs::read(vault.join("r2.mixenc.json")).unwrap()).unwrap();
+    assert!(config["mirror"].as_str().unwrap().ends_with("/mirror2"), "{config}");
+
+    // From inside a repository, mixenc finds its settings file through the register.
+    ok(s.mixenc(&repos[0], &["sync"], None));
+    assert_eq!(fs::read_to_string(base.join("mirror2/r2/a.cpp")).unwrap(), "// 表 r2\r\nint a;\r\n");
+    let place = json_of(s.mixenc(&repos[1], &["where", "--json"], None));
+    assert!(place["config"].as_str().unwrap().ends_with("r3.mixenc.json"), "{place}");
+    // Copilot's hooks and the commit gate start from the repository, and find it too.
+    let start = s.mixenc(
+        &repos[1],
+        &["copilot", "hook", "sessionStart"],
+        Some(json!({ "cwd": repos[1].display().to_string(), "source": "new" }).to_string().as_bytes()),
+    );
+    let context: Value = serde_json::from_slice(&start.stdout).unwrap();
+    assert!(context["additionalContext"].as_str().unwrap().contains("r3.mixenc.json"), "{context}");
+    let a = repos[1].join("a.cpp");
+    fs::write(&a, "// 表 r3\r\nint a;\r\n").unwrap();
+    git(&repos[1], &["add", "a.cpp"]);
+    let gate = s.mixenc(&repos[1], &["hooks", "pre-commit"], None);
+    assert_eq!(
+        gate.status.code(),
+        Some(1),
+        "the gate stops CP932 turned UTF-8: {}",
+        String::from_utf8_lossy(&gate.stderr)
+    );
+    fs::write(&a, common::sjis("// 表 r3\r\nint a;\r\n")).unwrap();
+    git(&repos[1], &["add", "a.cpp"]);
+
+    // In the vault, with two settings files and no repository there, it asks which.
+    let which = s.mixenc(&vault, &["doctor"], None);
+    assert_eq!(which.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&which.stderr).contains("--config"), "{}", String::from_utf8_lossy(&which.stderr));
+
+    // The person's .code-workspace: a dry run first, then the items, then nothing more to add.
+    let ws_file = vault.join("dev.code-workspace");
+    fs::write(&ws_file, "{\n  // mine\n  \"folders\": [{ \"path\": \".\" }],\n}\n").unwrap();
+    let add = |extra: &[&str]| {
+        let mut args = vec![
+            "workspace",
+            "dev.code-workspace",
+            "--config",
+            "r2.mixenc.json",
+            "--config",
+            "r3.mixenc.json",
+            "--json",
+        ];
+        args.extend_from_slice(extra);
+        json_of(s.mixenc(&vault, &args, None))
+    };
+    let dry = add(&["--dry-run"]);
+    assert_eq!(dry["written"], false);
+    assert!(fs::read_to_string(&ws_file).unwrap().ends_with("[{ \"path\": \".\" }],\n}\n"));
+    assert_eq!(add(&[])["written"], true);
+    assert_eq!(add(&[])["changes"], json!([]));
+    let text = fs::read_to_string(&ws_file).unwrap();
+    assert!(text.contains("// mine") && text.contains("r3.mixenc.json"), "{text}");
+    assert!(add(&[])["copilot"].as_str().unwrap().contains("--add-dir"));
+
+    // git in the vault sees the settings and the .code-workspace, never a mirror.
+    ok(s.mixenc(&repos[1], &["sync"], None));
+    let status = git(&vault, &["status", "--porcelain", "-uall"]);
+    let mut seen: Vec<&str> = status.lines().map(|l| l.rsplit('/').next().unwrap().trim_start_matches("?? ")).collect();
+    seen.sort_unstable();
+    assert_eq!(seen, ["dev.code-workspace", "r2.mixenc.json", "r3.mixenc.json"], "{status}");
+
+    // A settings file that gives r3 the mirror of r2 does not turn one into the other.
+    fs::write(
+        vault.join("bad.mixenc.json"),
+        r#"{"mirror": "../mirror2", "repos": [{"path": "../plain/r3", "mirror": "../mirror2/r2"}]}"#,
+    )
+    .unwrap();
+    let taken = s.mixenc(&vault, &["sync", "--config", "bad.mixenc.json"], None);
+    assert_eq!(taken.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&taken.stderr).contains("is the mirror of"),
+        "{}",
+        String::from_utf8_lossy(&taken.stderr)
+    );
+    let rebuild = s.mixenc(&vault, &["sync", "--rebuild", "--config", "bad.mixenc.json"], None);
+    assert_eq!(rebuild.status.code(), Some(2), "a rebuild does not take it either");
+    assert_eq!(fs::read_to_string(base.join("mirror2/r2/a.cpp")).unwrap(), "// 表 r2\r\nint a;\r\n");
 }

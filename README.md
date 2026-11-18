@@ -58,35 +58,50 @@ it opens.
 
 ## Getting started
 
-A **workspace** is a folder that holds `mixenc.json`; the mirrors go to its `mirror` folder.
+A **settings file** (`mixenc.json`, or `<name>.mixenc.json`) says where a repository is and where its
+mirror goes. One per repository is the usual. Keep the settings files with your notes (a vault in
+git is fine) and the mirrors outside git; no folder layout is required:
 
 ```text
-workspace/
-├─ repos/cloneA/            the repository (originals; people and agents edit these)
-├─ mirror/cloneA/           its mirror, the mirror database, clangd's index
-├─ mirror/_ext/<name>/      mirrors of include folders outside the repository
-└─ mixenc.json
+C:/src/cloneA/                 the repository (originals; people and agents edit these)
+D:/mirror/cloneA/              its mirror, the mirror database, clangd's index
+D:/mirror/_ext/<name>/         mirrors of include folders outside the repository
+D:/mirror/.mixenc/             mixenc's own state and logs
+<vault>/                       in git: only the settings and the window
+├─ cloneA.mixenc.json          { "mirror": "D:/mirror", "repos": [{ "path": "C:/src/cloneA" }] }
+├─ cloneB.mixenc.json
+└─ dev.code-workspace          your window; mixenc adds its items (mixenc.configs, clangd, ...)
 ```
 
-1. In the workspace: `mixenc init --repo repos/cloneA` writes `mixenc.json`.
-2. `mixenc sync` mirrors the repository and writes `mirror/cloneA/compile_commands.json`.
+1. `mixenc init --config <vault>/cloneA.mixenc.json --repo C:/src/cloneA --mirror D:/mirror` writes
+   the settings file and registers it (so that the repository finds it). Without `--config`,
+   `mixenc.json` goes to the current folder; without `--mirror`, the mirrors go to `mirror` beside it,
+   which is refused when that is in a git work tree.
+2. `mixenc sync` (in the repository, or with `--config`) mirrors it and writes the mirror database.
 3. `mixenc doctor` lists what needs doing (exit code 1 when something is broken).
 4. Point your editor's or agent's clangd at the entry, `mixenc clangd` (below). It syncs at every
    start and while it runs, so `mixenc sync` by hand is only needed without it.
 5. Install the commit gate: `mixenc hooks install`.
 6. For Copilot (VS Code and Copilot CLI): `mixenc copilot install` puts the hooks, the analysis agent,
    the MCP server and the entry under `~/.copilot` (below).
-7. For VS Code: `mixenc workspace` writes `cloneA.code-workspace`; open it (the extension's
-   "mixenc: Create a workspace" does steps 1, 2 and 7 from dialogs).
+7. For VS Code: `mixenc workspace <vault>/dev.code-workspace --config <vault>/cloneA.mixenc.json
+   --config <vault>/cloneB.mixenc.json` adds mixenc's items to your `.code-workspace` (made when it
+   is not there; `--dry-run` shows the changes first). The extension's "mixenc: Add a repository to
+   this window" does steps 1, 2 and 7 from dialogs.
+
+An agent asked to set up a window does the same with these commands, and never edits the
+`.code-workspace` or a settings file by hand (`mixenc workspace --help` says how).
 
 ## The clangd entry
 
 `mixenc clangd [clangd's arguments]` starts clangd on the mirror and stands between it and the
 client:
 
-- It finds the workspace from the folders the client opens (`mixenc.json` there or above), syncs,
-  and starts clangd with `--compile-commands-dir` (one repository) and `--path-mappings`. Without
-  a workspace it passes everything through to clangd.
+- It serves the settings files given with `--mixenc-config <file>` (repeat it: an editor starts
+  one clangd for all the folders of a window), else the one of each folder the client opens (a
+  settings file there or above, or a registered one), syncs, and starts clangd with
+  `--compile-commands-dir` (one repository) and `--path-mappings`. Settings files whose mirrors
+  overlap are left out, and it says so. Without a workspace it passes everything through to clangd.
 - Before a file is opened or saved, it mirrors that file. It watches the repositories and the
   database, and syncs after a change has settled (a checkout, another tool).
 - A client that reads CP932 files as UTF-8 (agents' LSP clients do) sends the 0x5C trap along:
@@ -98,13 +113,14 @@ client:
 Which clangd it starts: `MIXENC_CLANGD`, else `"clangd"` in `mixenc.json`, else `clangd.exe` on
 `PATH`, else the one vscode-clangd installed, else the one Neovim's Mason installed.
 
-It keeps a log in `mirror\.mixenc\entry.log` (on this PC only): how each document came (read right,
+It keeps a log in `<mirror>\.mixenc\entry.log` (on this PC only): how each document came (read right,
 misread and replaced), the diagnostics counts, and where definitions and references lead (a
 mirror path there would be a bug). Both VS Code without a `files.encoding` and Copilot CLI send CP932
 files misread as UTF-8 (measured); the entry replaces them.
 
 - **VS Code** (vscode-clangd): `"clangd.path": "C:\\Tools\\mixenc.exe"` and
-  `"clangd.arguments": ["clangd", "--background-index"]`.
+  `"clangd.arguments": ["clangd", "--background-index", "--mixenc-config", "<settings file>", ...]`
+  (`mixenc workspace` writes both).
 - **Copilot CLI**: in `~/.copilot/lsp-config.json`, `"command": "mixenc"`,
   `"args": ["clangd", "--background-index"]`.
 - **Anything that runs `clangd`**: a copy of `mixenc.exe` named `clangd.exe`, earlier on `PATH` than
@@ -193,17 +209,23 @@ push `.git/hooks`):
 
 ## VS Code (`mixenc workspace` and the extension)
 
-`mixenc workspace` writes `<repository>.code-workspace` next to `mixenc.json`, from it (edit
-`mixenc.json` and run it again, not the file):
+The `.code-workspace` is yours: `mixenc workspace <file> --config <settings>...` adds mixenc's items
+to it and keeps everything else (other folders, settings, comments). Adding the same again changes
+nothing; `--dry-run` prints the changes and writes nothing. Its items:
 
-- the repositories and their documents (`wiki`) as folders; the mirror is not one of them;
-- vscode-clangd started through the entry (`clangd.path`, `clangd.arguments`), and Microsoft's
-  C/C++ IntelliSense off, so that one analyzer answers;
-- mixed and broken files read-only (`files.readonlyInclude`): an editor reads a file in one
-  encoding, and a save would break its other lines;
+- the repositories (and their documents, `wiki`) as folders, when they are not there; the mirrors
+  are not;
+- `mixenc.configs`: the settings files this window uses (relative to the `.code-workspace`);
+- vscode-clangd started through the entry (`clangd.path`; `clangd.arguments` keeps your arguments
+  and gets `--mixenc-config` for each settings file), and Microsoft's C/C++ IntelliSense off, so
+  that one analyzer answers;
+- mixed and broken files read-only (`files.readonlyInclude`, only the entries under mixenc's
+  roots): an editor reads a file in one encoding, and a save would break its other lines;
 - vscode-clangd and mixenc's extension as recommended extensions.
 
-It prints how to start Copilot CLI with the documents at hand (`--add-dir`).
+The same settings file can serve several `.code-workspace` files. A file written whole by an earlier
+mixenc loses its first comment line (it said mixenc wrote all of it). It prints how to start Copilot
+CLI with the window's other folders at hand (`--add-dir`).
 
 The extension (`editors/vscode`) is mixenc's face in VS Code; mixenc does the work. Usually nothing
 shows:
@@ -215,9 +237,13 @@ shows:
 - The mirror follows at start, after a save, when the window gets the focus back and after a
   checkout, merge or pull.
 - A status bar item shows only when something is broken (click it) or while a long sync runs.
-- Commands: Create a workspace, Diagnose (the doctor's report; files that read two ways show both
-  readings side by side, and a button writes the choice into `mixenc.json`), Diagnose deeply,
-  Mirror everything again, Open mixenc.json.
+- A window with several settings files (`mixenc.configs`) has a session for each; they share the
+  status bar item, and each registers its settings file.
+- Commands: Add a repository to this window (a new settings file with the mirror outside git, or
+  one there already; the changes to the `.code-workspace` are shown before they are written),
+  Diagnose (the doctor's report; files that read two ways show both readings side by side, and a
+  button writes the choice into the settings file), Diagnose deeply, Mirror everything again, Open
+  the settings file.
 
 Its tests run it in a real VS Code on a sample (`npm run test:vscode`).
 
@@ -274,11 +300,13 @@ answered from a symbol to its callers and callees with the originals' paths.
 
 | Command | What it does |
 |---|---|
-| `mixenc init --repo <dir>... [--wiki <dir>]` | Write `mixenc.json` in the current folder |
+| `mixenc init --repo <dir>... [--mirror <dir>] [--wiki <dir>]` | Write a settings file (`mixenc.json` here, or the one `--config` names) and register it when a repository is outside its folder |
+| `mixenc register [<file>...]` | Register settings files, so that their repositories find them |
 | `mixenc sync [--repo <name>] [--rebuild]` | Mirror the repositories and their outside include folders, write the mirror databases (`--rebuild`: every file anew) |
 | `mixenc doctor [--limit N]` | Check everything, change nothing |
 | `mixenc doctor --deep [--jobs N] [--update-baseline]` | The deep checks with clangd, against the baseline |
-| `mixenc workspace [--name N] [--force]` | Write the `.code-workspace` for VS Code |
+| `mixenc workspace [<file>] [--dry-run]` | Add mixenc's items to a `.code-workspace` (the settings files: `--config`, repeated) |
+| `mixenc where [<path>]` | The settings file that holds a folder or file (exit code 1 when none does) |
 | `mixenc files [--all]` | The files that are not plain UTF-8 or ASCII, with judgement and state (what the extension reads) |
 | `mixenc override <file> <encoding\|skip>` / `--remove` | Decide how a file is read (the override table) and mirror it so at once |
 | `mixenc read <file> [--as E] [--start N] [--end M]` | A file's text, read as judged or as another encoding (to compare readings) |
@@ -292,34 +320,52 @@ answered from a symbol to its callers and callees with the originals' paths.
 | `mixenc copilot intro [--ja]` | The text that introduces the analysis agent to an orchestrator |
 | `mixenc copilot hook <event>` | Answer one hook event (Copilot runs this) |
 
-Common options: `-C <dir>` (as `git -C`), `--json`. Exit codes: `0` fine, `1` something to do
+Common options: `-C <dir>` (as `git -C`), `--json`, `--config <file>` (the settings file, instead
+of the one found from the folder: a settings file in it or above it whose repository or mirror holds
+the folder, else a registered one, else the only one in the nearest folder that has any). Exit codes: `0` fine, `1` something to do
 (`sync`: a file could not be mirrored; `doctor`: something is broken; `hooks`: not installed
 because of `core.hooksPath`; `hooks pre-commit`: the commit is stopped; `copilot status`: something
 is not installed), `2` an error. `copilot hook` always exits `0`.
 
 ## `mixenc.json`
 
+A settings file is `mixenc.json` or `<name>.mixenc.json`; its paths are relative to its folder or
+absolute.
+
 ```json
 {
   "format_version": 1,
+  "mirror": "D:/mirror",
   "repos": [
-    { "path": "repos/cloneA", "wiki": "repos/cloneA_Wiki" }
+    { "path": "C:/src/cloneA", "wiki": "C:/docs/cloneA_Wiki" }
   ],
   "external": ["C:/Vendor/SDK/include"],
   "overrides": {
-    "repos/cloneA/src/old.h": { "as": "cp932", "judged": "ambiguous-cp932-euc-jp" },
-    "repos/cloneA/data/table.bin": { "as": "skip" }
+    "C:/src/cloneA/src/old.h": { "as": "cp932", "judged": "ambiguous-cp932-euc-jp" },
+    "C:/src/cloneA/data/table.bin": { "as": "skip" }
   }
 }
 ```
 
-- `repos[].path`: relative to the workspace or absolute. `name` (the mirror folder's name,
-  default: the folder's name), `wiki` (its documents) and `db` (its `compile_commands.json`, the
-  file or its folder; default: lazymsbuild's, else the repository's root) are optional.
+- `mirror`: where the mirrors go: each repository's (`<mirror>/<name>`), the outside include
+  folders' (`_ext`) and mixenc's state (`.mixenc`). Default: `mirror` beside the settings file;
+  refused when that is in a git work tree. Several settings files may name the same folder.
+- `repos[].path`: the repository. Optional: `name` (default: the folder's name), `mirror` (its
+  mirror, default `<mirror>/<name>`), `wiki` (its documents) and `db` (its `compile_commands.json`,
+  the file or its folder; default: lazymsbuild's, else the repository's root).
 - `external`: include folders outside the repositories to mirror besides those the databases name.
 - `overrides`: what a person decided for a file the judgement could not (or got wrong): an encoding
   to read it as, or `skip`. `judged` records the judgement at the time; the doctor lists the
   override once it changes.
+
+mixenc refuses a mirror inside a repository, inside a git work tree, inside another mirror or over
+its own folders. A mirror remembers its original: a folder that is another original's mirror is
+not written (not even with `--rebuild`), and a mirror never removes another mirror inside it.
+
+A repository outside its settings file's folder finds the file through the register
+(`%LOCALAPPDATA%\mixenc\workspaces.json`, or `MIXENC_HOME`): `mixenc init`, `mixenc workspace`
+and the extension register the files they use; `mixenc register` does it by hand (after a clone
+of the vault, say). The doctor says when a settings file is not registered.
 
 ## Judgements
 

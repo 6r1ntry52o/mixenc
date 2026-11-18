@@ -96,6 +96,7 @@ pub fn run(ws: &Workspace) -> Report {
         long_paths += check_repo(&mut d, &repo);
     }
     d.repo = None;
+    check_register(&mut d);
     check_copilot(&mut d);
     check_overrides(&mut d);
     check_long_path_setting(&mut d, long_paths);
@@ -108,11 +109,21 @@ pub fn run(ws: &Workspace) -> Report {
             Severity::Ok => d.summary.ok += 1,
         }
     }
-    Report { format_version: FORMAT_VERSION, workspace: paths::display(&ws.root), summary: d.summary, items: d.items }
+    Report { format_version: FORMAT_VERSION, workspace: paths::display(&ws.path), summary: d.summary, items: d.items }
 }
 
 /// Checks one repository; returns how many of its paths are longer than 260 characters.
 fn check_repo(d: &mut Doctor, repo: &RepoPaths) -> usize {
+    if let Err(err) = crate::mirror::check_owner(&Root { source: repo.source.clone(), mirror: repo.mirror.clone() }) {
+        d.add(
+            Severity::Broken,
+            "mirror",
+            format!("{err:#}"),
+            Some("give it a mirror of its own in the settings file"),
+            Vec::new(),
+        );
+        return 0;
+    }
     if !Index::exists(&repo.mirror) {
         d.add(Severity::Broken, "mirror", "not mirrored yet".into(), Some("mixenc sync"), Vec::new());
         return 0;
@@ -175,6 +186,26 @@ fn check_commit_gate(d: &mut Doctor, repo: &RepoPaths) {
 }
 
 /// Copilot's gate and the analysis agent (per user, under `~/.copilot`).
+/// A repository outside the settings file's folder finds the file only through the register
+/// (Copilot's hooks, the commit gate and the analysis tools start from the repository).
+fn check_register(d: &mut Doctor) {
+    if !d.ws.needs_register() {
+        return;
+    }
+    let file = paths::key(&d.ws.path.to_string_lossy());
+    if crate::config::registered().iter().any(|r| paths::key(&r.to_string_lossy()) == file) {
+        d.add(Severity::Ok, "register", "the settings file is registered".into(), None, Vec::new());
+    } else {
+        d.add(
+            Severity::Notice,
+            "register",
+            "the settings file is not registered: from inside its repositories (Copilot's hooks, the commit gate) mixenc does not find it".into(),
+            Some("mixenc register --config <the settings file>"),
+            vec![paths::display(&d.ws.path)],
+        );
+    }
+}
+
 fn check_copilot(d: &mut Doctor) {
     let pieces = crate::copilot::status(&crate::copilot::home());
     let hooks = pieces.iter().find(|p| p.name == "hooks");

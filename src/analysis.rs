@@ -50,12 +50,24 @@ struct At {
 }
 
 impl Tools {
+    /// Tools that know these workspaces from the start (`mixenc mcp --config ...`: a window with
+    /// several settings files), besides the ones found from paths and the current folder.
+    pub fn with(workspaces: Vec<Workspace>) -> Tools {
+        let mut tools = Tools::default();
+        for ws in workspaces {
+            tools
+                .analyzers
+                .insert(paths::key(&ws.path.to_string_lossy()), Analyzer { ws, client: None, db_files: None });
+        }
+        tools
+    }
+
     /// Answers one tool call; `Err` says what to change in the call.
     pub fn call(&mut self, name: &str, args: &Value) -> Result<String> {
         let cwd = std::env::current_dir().unwrap_or_default();
         let path = args.get("path").and_then(Value::as_str).filter(|p| !p.is_empty()).map(|p| self.resolve(p, &cwd));
         let ws = self.workspace_for(path.as_deref(), &cwd)?;
-        let key = paths::key(&ws.root.to_string_lossy());
+        let key = paths::key(&ws.path.to_string_lossy());
         let analyzer = self.analyzers.entry(key).or_insert_with(|| Analyzer { ws, client: None, db_files: None });
         let out = Out { cwd: &cwd };
         match name {
@@ -81,7 +93,11 @@ impl Tools {
         if p.is_absolute() {
             return p;
         }
-        let candidates = std::iter::once(cwd.to_path_buf()).chain(self.analyzers.values().map(|a| a.ws.root.clone()));
+        let candidates = std::iter::once(cwd.to_path_buf()).chain(
+            self.analyzers
+                .values()
+                .flat_map(|a| std::iter::once(a.ws.root.clone()).chain(a.ws.repos().into_iter().map(|r| r.source))),
+        );
         for base in candidates {
             let joined = base.join(&p);
             if joined.exists() {
@@ -110,10 +126,9 @@ impl Tools {
         }
         match self.analyzers.values().collect::<Vec<_>>().as_slice() {
             [one] => Ok(one.ws.clone()),
-            _ => bail!(
-                "no mixenc workspace here ({}); give path: a file or folder of the workspace (mixenc.json is at its root)",
-                paths::display(cwd)
-            ),
+            _ => {
+                bail!("no mixenc workspace here ({}); give path: a file or folder of a repository", paths::display(cwd))
+            }
         }
     }
 }

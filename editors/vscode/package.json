@@ -29,19 +29,24 @@
     "untrustedWorkspaces": {
       "supported": "limited",
       "description": "%untrusted%",
-      "restrictedConfigurations": ["mixenc.path"]
+      "restrictedConfigurations": [
+        "mixenc.path",
+        "mixenc.configs",
+        "mixenc.workspace"
+      ]
     }
   },
   "main": "./out/src/extension.js",
   "activationEvents": [
     "onStartupFinished",
-    "workspaceContains:mixenc.json"
+    "workspaceContains:mixenc.json",
+    "workspaceContains:*.mixenc.json"
   ],
   "contributes": {
     "commands": [
       {
-        "command": "mixenc.createWorkspace",
-        "title": "%command.createWorkspace%",
+        "command": "mixenc.addRepository",
+        "title": "%command.addRepository%",
         "category": "mixenc"
       },
       {
@@ -74,11 +79,21 @@
           "scope": "machine-overridable",
           "description": "%config.path%"
         },
+        "mixenc.configs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "window",
+          "description": "%config.configs%"
+        },
         "mixenc.workspace": {
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "%config.workspace%"
+          "description": "%config.workspace%",
+          "deprecationMessage": "%config.workspace.deprecated%"
         }
       }
     }

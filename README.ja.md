@@ -45,29 +45,34 @@ mixenc はリポの**写し**を UTF-8 でリポの外に作ります（行と�
 
 ## 始め方
 
-**ワークスペース**は `mixenc.json` を置くフォルダです。写しはその `mirror` フォルダに作ります。
+**設定ファイル**（`mixenc.json` か `<名前>.mixenc.json`）に、リポの場所とその写しの置き場を書きます。リポごとに 1 枚が普通です。設定ファイルは自分のノート（git で管理する vault でよい）に置き、写しは git の外に置きます。決まったフォルダの形はありません。
 
 ```text
-workspace/
-├─ repos/cloneA/            リポ（原本。人もエージェントもここを直す）
-├─ mirror/cloneA/           写し・写しの DB・clangd の索引
-├─ mirror/_ext/<名前>/      リポの外の include の写し
-└─ mixenc.json
+C:/src/cloneA/                 リポ（原本。人もエージェントもここを直す）
+D:/mirror/cloneA/              写し・写しの DB・clangd の索引
+D:/mirror/_ext/<名前>/         リポの外の include の写し
+D:/mirror/.mixenc/             mixenc の状態とログ
+<vault>/                       git で管理する。設定と窓だけ
+├─ cloneA.mixenc.json          { "mirror": "D:/mirror", "repos": [{ "path": "C:/src/cloneA" }] }
+├─ cloneB.mixenc.json
+└─ dev.code-workspace          自分の窓。mixenc が自分の項目（mixenc.configs・clangd など）を足す
 ```
 
-1. ワークスペースで `mixenc init --repo repos/cloneA` を実行すると、`mixenc.json` ができます。
-2. `mixenc sync` でリポを写し、`mirror/cloneA/compile_commands.json` を書きます。
+1. `mixenc init --config <vault>/cloneA.mixenc.json --repo C:/src/cloneA --mirror D:/mirror` で設定ファイルを書き、登録します（リポから見つかるように）。`--config` が無ければ今のフォルダに `mixenc.json` を書きます。`--mirror` が無ければ写しはその隣の `mirror` に置きますが、そこが git の作業ツリーの中なら止めます。
+2. `mixenc sync`（リポの中で、か `--config` 付きで）でリポを写し、写しの DB を書きます。
 3. `mixenc doctor` で、すべきことの一覧が出ます（崩れがあれば終了コード 1）。
 4. エディタやエージェントの clangd を、入口 `mixenc clangd` に向けます（下の節）。入口が起動のたびと動いている間に写すので、手で `mixenc sync` を実行するのは入口を使わない時だけです。
 5. commit の関所を入れます（`mixenc hooks install`）。
 6. Copilot（VS Code と Copilot CLI）には、`mixenc copilot install` でフック・解析エージェント・MCP サーバ・入口を `~/.copilot` に入れます（下の節）。
-7. VS Code には、`mixenc workspace` で `cloneA.code-workspace` を書き、それを開きます（拡張のコマンド「mixenc: ワークスペースを作る」なら、1・2・7 をダイアログで済ませます）。
+7. VS Code には、`mixenc workspace <vault>/dev.code-workspace --config <vault>/cloneA.mixenc.json --config <vault>/cloneB.mixenc.json` で、自分の `.code-workspace` に mixenc の項目を足します（無ければ作ります。`--dry-run` で先に変わる所を見られます）。拡張のコマンド「mixenc: この窓にリポを足す」なら、1・2・7 をダイアログで済ませます。
+
+窓の用意をエージェントに頼む時も、エージェントはこのコマンドを呼びます。`.code-workspace` と設定ファイルを手で直しません（手順は `mixenc workspace --help`）。
 
 ## 入口（`mixenc clangd`）
 
 `mixenc clangd [clangd の引数]` は、写しで clangd を起こし、clangd とクライアントの間に立ちます。
 
-- クライアントが開いたフォルダ（とその上）の `mixenc.json` からワークスペースを見つけて写し、clangd を `--compile-commands-dir`（リポが 1 つの時）と `--path-mappings` 付きで起こします。ワークスペースが無ければ、全部をそのまま clangd に渡します。
+- `--mixenc-config <ファイル>` で渡された設定ファイル（繰り返せる。エディタは窓の全部のフォルダに clangd を 1 つしか起こさない）を、無ければクライアントが開いたフォルダごとの設定ファイル（そこか上にあるもの、か登録したもの）を扱います。写して、clangd を `--compile-commands-dir`（リポが 1 つの時）と `--path-mappings` 付きで起こします。写しが重なる設定ファイルは外し、そのことを知らせます。ワークスペースが無ければ、全部をそのまま clangd に渡します。
 - ファイルを開く・保存する前に、そのファイルを写します。リポと DB を見張り、変更が落ち着いたら写します（checkout や別の道具での変更）。
 - CP932 のファイルを UTF-8 として読むクライアント（エージェントの LSP はそう読む）は、0x5C の罠ごと本文を送ってきます。その本文は写しの本文に差し替えます。それ以降、そのクライアントとの間では、列をクライアントの読み方と写しの読み方の間で読み替えます（行は同じ）。
 - 写せないファイルは `window/showMessage` で知らせ、解析は続けます。入口が自分であるメッセージに失敗した時は、そのメッセージをそのまま渡し、そのことを知らせます。
@@ -79,14 +84,14 @@ workspace/
 4. vscode-clangd が入れたもの
 5. Neovim の Mason が入れたもの
 
-入口は `mirror\.mixenc\entry.log` にログを残します（この PC の中だけ）。中身は次のとおりです。
+入口は `<写しの置き場>\.mixenc\entry.log` にログを残します（この PC の中だけ）。中身は次のとおりです。
 - それぞれの本文がどう届いたか（正しく読んだ・読み違えたので差し替えた）
 - 診断の件数
 - 定義と参照がどこに返ったか（写しのパスが出たら不具合）
 
 `files.encoding` を指定しない VS Code も、Copilot CLI も、CP932 のファイルを UTF-8 として読み違えて送ってきます（実測）。入口はそれを差し替えます。
 
-- **VS Code**（vscode-clangd）：`"clangd.path": "C:\\Tools\\mixenc.exe"` と `"clangd.arguments": ["clangd", "--background-index"]`。
+- **VS Code**（vscode-clangd）：`"clangd.path": "C:\\Tools\\mixenc.exe"` と `"clangd.arguments": ["clangd", "--background-index", "--mixenc-config", "<設定ファイル>", ...]`（`mixenc workspace` が両方を書きます）。
 - **Copilot CLI**：`~/.copilot/lsp-config.json` に `"command": "mixenc"` と `"args": ["clangd", "--background-index"]`。
 - **`clangd` を起こすもの全般**：`mixenc.exe` を `clangd.exe` という名前で、本物より `PATH` の前に置くと入口になります（clangd を探す時は自分を飛ばします）。
 
@@ -143,14 +148,15 @@ CP932 のファイルを Unicode を通して読み書きするエディタや�
 
 ## VS Code（`mixenc workspace` と拡張）
 
-`mixenc workspace` は、`mixenc.json` の隣に `<リポ>.code-workspace` を書きます。中身は `mixenc.json` から作るので、直す時はファイルではなく `mixenc.json` を直して、もう一度実行します。
+`.code-workspace` は自分のものです。`mixenc workspace <ファイル> --config <設定ファイル>...` は、そこに mixenc の項目を足し、ほか（ほかのフォルダ・設定・コメント）は残します。同じものをもう一度足しても何も変わりません。`--dry-run` は変わる所を出すだけで書きません。mixenc の項目は次のとおりです。
 
-- リポとそのドキュメント（`wiki`）をフォルダにする（写しは入れない）
-- vscode-clangd を入口から起こす（`clangd.path`・`clangd.arguments`）。Microsoft の C/C++ の IntelliSense は止め、答えるのを 1 つにする
-- 混在・壊れのファイルは読み取り専用（`files.readonlyInclude`）。エディタはファイルを 1 つの文字コードで読むので、保存するとほかの行が壊れる
+- リポ（とそのドキュメント `wiki`）のフォルダ（無ければ足す。写しは入れない）
+- `mixenc.configs`：この窓が使う設定ファイル（`.code-workspace` からの相対）
+- vscode-clangd を入口から起こす（`clangd.path`。`clangd.arguments` は自分の引数を残し、設定ファイルごとに `--mixenc-config` を足す）。Microsoft の C/C++ の IntelliSense は止め、答えるのを 1 つにする
+- 混在・壊れのファイルは読み取り専用（`files.readonlyInclude`。mixenc の根の下の項目だけを直す）。エディタはファイルを 1 つの文字コードで読むので、保存するとほかの行が壊れる
 - 勧める拡張に vscode-clangd と mixenc の拡張
 
-Copilot CLI をドキュメントと一緒に起こすコマンド（`--add-dir`）も出します。
+同じ設定ファイルを、いくつもの `.code-workspace` で使えます。前の mixenc が丸ごと書いたファイルは、先頭の印の行（mixenc が全部を書くと言っていた行）を外します。窓のほかのフォルダと一緒に Copilot CLI を起こすコマンド（`--add-dir`）も出します。
 
 拡張（`editors/vscode`）は、VS Code での mixenc の顔です。仕事は mixenc がします。いつもは何も出しません。
 
@@ -158,7 +164,8 @@ Copilot CLI をドキュメントと一緒に起こすコマンド（`--add-dir`
 - 混在・壊れ・あいまい・写せないファイルは、理由と一緒に「問題」に出します。読み取り専用の一覧は判定に合わせて直します
 - 写しは、起動・保存・窓にフォーカスが戻った時・checkout や merge や pull の後に合わせます
 - ステータスバーには、崩れがある時（押すと診断）と、長い照合の間だけ出します
-- コマンド: ワークスペースを作る・診断（doctor の結果。2 通りに読めるファイルは読み方を並べ、ボタンで `mixenc.json` に書く）・深い診断・写しを作り直す・mixenc.json を開く
+- 設定ファイルが複数ある窓（`mixenc.configs`）では、設定ファイルごとに動き、ステータスバーは 1 つにまとめます。それぞれの設定ファイルを登録します
+- コマンド: この窓にリポを足す（写しを git の外に置く新しい設定ファイルか、既にある設定ファイル。`.code-workspace` に足すものを見せてから書く）・診断（doctor の結果。2 通りに読めるファイルは読み方を並べ、ボタンで設定ファイルに書く）・深い診断・写しを作り直す・設定ファイルを開く
 
 拡張の試験は、見本を本物の VS Code で開いて確かめます（`npm run test:vscode`）。
 
@@ -201,11 +208,13 @@ VS Code の Copilot と Copilot CLI は、同じフック（`~/.copilot/hooks/`�
 
 | コマンド | すること |
 |---|---|
-| `mixenc init --repo <dir>... [--wiki <dir>]` | 今のフォルダに `mixenc.json` を書く |
+| `mixenc init --repo <dir>... [--mirror <dir>] [--wiki <dir>]` | 設定ファイルを書く（今のフォルダの `mixenc.json` か `--config` のファイル）。リポがそのフォルダの外なら登録する |
+| `mixenc register [<file>...]` | 設定ファイルを登録する（リポから見つかるように） |
 | `mixenc sync [--repo <名前>] [--rebuild]` | リポとリポの外の include を写し、写しの DB を書く（`--rebuild` は全部を作り直す） |
 | `mixenc doctor [--limit N]` | 全部を確かめる（何も変えない） |
 | `mixenc doctor --deep [--jobs N] [--update-baseline]` | clangd で深く確かめ、基準と比べる |
-| `mixenc workspace [--name N] [--force]` | VS Code の `.code-workspace` を書く |
+| `mixenc workspace [<file>] [--dry-run]` | `.code-workspace` に mixenc の項目を足す（設定ファイルは `--config` を繰り返す） |
+| `mixenc where [<path>]` | フォルダやファイルを持つ設定ファイル（無ければ終了コード 1） |
 | `mixenc files [--all]` | UTF-8・ASCII でないファイルと、その判定と状態（拡張が読む） |
 | `mixenc override <file> <文字コード\|skip>` / `--remove` | ファイルの読み方を決め（上書き表）、すぐその読み方で写す |
 | `mixenc read <file> [--as E] [--start N] [--end M]` | ファイルの本文を、判定どおりか別の文字コードで読んで出す（読み方を比べる） |
@@ -219,7 +228,7 @@ VS Code の Copilot と Copilot CLI は、同じフック（`~/.copilot/hooks/`�
 | `mixenc copilot intro [--ja]` | 解析エージェントをオーケストラに紹介する文 |
 | `mixenc copilot hook <event>` | フックの 1 回分に答える（Copilot が呼ぶ） |
 
-共通のオプションは `-C <dir>`（`git -C` と同じ）と `--json` です。終了コードは次のとおりです。
+共通のオプションは `-C <dir>`（`git -C` と同じ）・`--json`・`--config <file>`（設定ファイル。無ければフォルダから探す: そこか上の設定ファイルでリポか写しがそのフォルダを持つもの、次に登録したもの、次にいちばん近いフォルダにある 1 枚）です。終了コードは次のとおりです。
 - `0`：問題なし
 - `1`：すべきことがある（`sync` は写せないファイルがあった時、`doctor` は崩れがある時、`hooks` は `core.hooksPath` で入れなかった時、`hooks pre-commit` は commit を止めた時、`copilot status` は入っていないものがある時）
 - `2`：エラー
@@ -227,14 +236,20 @@ VS Code の Copilot と Copilot CLI は、同じフック（`~/.copilot/hooks/`�
 
 ## `mixenc.json`
 
-形は [README.md](README.md#mixencjson) を見てください。
+設定ファイルは `mixenc.json` か `<名前>.mixenc.json` です。中のパスは、そのフォルダからの相対か絶対です。形は [README.md](README.md#mixencjson) を見てください。
 
-- `repos[].path` はワークスペースからの相対パスか絶対パスです。次の 3 つは省けます。
-  - `name`：写しのフォルダ名（既定はフォルダの名前）
+- `mirror`：写しの置き場。リポの写し（`<mirror>/<name>`）・リポの外の include の写し（`_ext`）・mixenc の状態（`.mixenc`）を置きます。既定はファイルの隣の `mirror` ですが、そこが git の作業ツリーの中なら止めます。いくつもの設定ファイルが同じ置き場を使えます。
+- `repos[].path` はリポです。次の 4 つは省けます。
+  - `name`：名前（既定はフォルダの名前）
+  - `mirror`：そのリポの写し（既定は `<mirror>/<name>`）
   - `wiki`：ドキュメント
   - `db`：`compile_commands.json` のファイルかそのフォルダ（既定は lazymsbuild のもの、無ければリポの根）
 - `external` には、DB が指す場所のほかに写す、リポの外の include フォルダを書きます。
 - `overrides` は上書き表です。判定が決められなかった（または間違えた）ファイルについて、人が決めたことを書きます。読む文字コードか `skip` を指定し、`judged` にその時の判定を残します。判定が変わると doctor が一覧に出します。
+
+写しをリポの中・git の作業ツリーの中・ほかの写しの中・mixenc 自身のフォルダの上に置く設定は止めます。写しはどの原本の写しかを覚えていて、ほかの原本の写しのフォルダには書きません（`--rebuild` でも）。写しが、中にあるほかの写しを消すこともありません。
+
+設定ファイルのフォルダの外にあるリポは、登録（`%LOCALAPPDATA%\mixenc\workspaces.json`、または `MIXENC_HOME`）から設定ファイルを見つけます。`mixenc init`・`mixenc workspace`・拡張は使う設定ファイルを登録します。`mixenc register` は手で登録します（vault を clone した後など）。登録されていなければ doctor が知らせます。
 
 ## 判定
 

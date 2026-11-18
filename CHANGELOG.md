@@ -62,10 +62,26 @@ others to read (`mixenc.json`, `repo.json`, the doctor's `--json` report) carry 
   includes, how much clangd's index holds.
 - `mixenc files`, `mixenc override`, `mixenc read` and `mixenc sync --rebuild`, for the extension
   and by hand.
+- Stage 6: settings files anywhere (`mixenc.json` or `<name>.mixenc.json`, such as in a vault kept
+  in git), with the mirrors where they say (`mirror`, `repos[].mirror`); a mirror in a git work
+  tree, inside a repository, inside another mirror or over mixenc's folders is refused. The global
+  `--config <file>`; `mixenc init --mirror`; `mixenc register`, and the doctor says when a settings
+  file is not registered.
+- Stage 6: `mixenc workspace <file> --config ... [--dry-run]` adds mixenc's items to the person's
+  `.code-workspace` and keeps the rest (folders, settings, comments); `mixenc.configs` lists the
+  window's settings files. Its help says how an agent sets up a window.
+- Stage 6: the entry serves several settings files at once (`--mixenc-config <file>`, repeated):
+  an editor has one clangd for all its folders. `mixenc mcp --config ...` knows them from the start.
+- Stage 6: the extension runs a session per settings file of the window, with one status bar item;
+  "Add a repository to this window" replaces "Create a workspace".
 - Releases: a zip per architecture with `mixenc.exe` and the third-party licenses, the extension's
   `.vsix`, and `SHA256SUMS`.
 
 ### Fixed
+
+- A mirror remembers its original: a settings file that names another original's mirror no longer
+  turns it into its own (the sync removed the other's files), not even with `--rebuild`; a mirror
+  never removes another mirror inside it.
 
 - `--path-mappings` lists every root with an upper-case and a lower-case drive letter (clangd
   matches the case; VS Code sends `c:`).

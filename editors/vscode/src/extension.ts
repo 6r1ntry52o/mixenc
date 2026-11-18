@@ -1,7 +1,9 @@
 // The mixenc extension: the face of the mixenc executable in VS Code. mixenc does the work (judges,
 // mirrors, checks); the extension passes it the moments (opening, saving, focus, git) and shows
 // what it says. Usually nothing shows: a status bar item appears only when something is broken or
-// a long sync runs, and files that need care are in the Problems panel.
+// a long sync runs, and files that need care are in the Problems panel. A window may use several
+// settings files (`mixenc.configs`, one per repository): each gets a session, and they share the
+// status bar item.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -10,6 +12,7 @@ import * as vscode from 'vscode';
 import {
   type FileInfo,
   type Report,
+  configFiles,
   editorEncoding,
   html,
   needsChoice,
@@ -23,11 +26,17 @@ import { Mixenc } from './mixenc';
 
 const t = vscode.l10n.t;
 
-let session: Session | undefined;
+let sessions: Session[] = [];
+let status: vscode.StatusBarItem | undefined;
+/** Writes to the .code-workspace one at a time (sessions refresh at the same moments). */
+let writing: Promise<unknown> = Promise.resolve();
 
 export async function activate(context: vscode.ExtensionContext): Promise<Api> {
   const log = vscode.window.createOutputChannel('mixenc', { log: true });
-  context.subscriptions.push(log);
+  status = vscode.window.createStatusBarItem('mixenc.status', vscode.StatusBarAlignment.Left, 0);
+  status.name = 'mixenc';
+  status.command = 'mixenc.diagnose';
+  context.subscriptions.push(log, status, { dispose: stopSessions });
   const command = (id: string, run: () => unknown) =>
     context.subscriptions.push(
       vscode.commands.registerCommand(id, async () => {
@@ -39,54 +48,119 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
         }
       }),
     );
-  command('mixenc.createWorkspace', () => createWorkspace(log));
-  command('mixenc.diagnose', () => needSession().diagnose(false));
-  command('mixenc.diagnoseDeep', () => needSession().diagnose(true));
-  command('mixenc.rebuild', () => needSession().sync(true));
-  command('mixenc.openConfig', () =>
-    vscode.window.showTextDocument(vscode.Uri.file(path.join(needSession().root, 'mixenc.json'))),
+  command('mixenc.addRepository', () => addRepository(log));
+  command('mixenc.diagnose', async () => (await pickSession(true))?.diagnose(false));
+  command('mixenc.diagnoseDeep', async () => (await pickSession(false))?.diagnose(true));
+  command('mixenc.rebuild', async () => Promise.all(needSessions().map((s) => s.sync(true))));
+  command('mixenc.openConfig', async () => {
+    const s = await pickSession(false);
+    if (s) {
+      await vscode.window.showTextDocument(vscode.Uri.file(s.config));
+    }
+  });
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('mixenc.configs') || e.affectsConfiguration('mixenc.workspace')) {
+        startSessions(log);
+      }
+    }),
   );
-
-  const root = findWorkspace();
-  if (root) {
-    session = new Session(root, exePath(), log);
-    context.subscriptions.push(session);
-    void session.start();
-  }
-  return { session: () => session };
+  startSessions(log);
+  return { session: () => sessions[0], sessions: () => sessions };
 }
 
 export function deactivate(): void {
-  session = undefined;
+  stopSessions();
 }
 
 /** What the integration tests look at. */
 export interface Api {
   session(): Session | undefined;
+  sessions(): Session[];
 }
 
-function needSession(): Session {
-  if (!session) {
-    throw new Error(t('this window has no mixenc workspace (mixenc.json); "mixenc: Create a workspace" makes one'));
+function stopSessions(): void {
+  sessions.forEach((s) => s.dispose());
+  sessions = [];
+  updateStatus();
+}
+
+function startSessions(log: vscode.LogOutputChannel): void {
+  stopSessions();
+  sessions = findConfigs().map((config) => new Session(config, exePath(), log));
+  log.info(`settings files: ${sessions.map((s) => s.config).join(', ') || '(none)'}`);
+  for (const s of sessions) {
+    void s.start();
   }
-  return session;
+}
+
+function needSessions(): Session[] {
+  if (!sessions.length) {
+    throw new Error(t('this window has no mixenc settings file; "mixenc: Add a repository to this window" makes one'));
+  }
+  return sessions;
+}
+
+/** The session to act on: the only one, else one the person picks (those with problems first). */
+async function pickSession(brokenFirst: boolean): Promise<Session | undefined> {
+  const all = needSessions();
+  if (all.length === 1) {
+    return all[0];
+  }
+  const ordered = brokenFirst ? [...all].sort((a, b) => b.brokenCount - a.brokenCount) : all;
+  const picked = await vscode.window.showQuickPick(
+    ordered.map((s) => ({
+      label: path.basename(s.config),
+      description: s.brokenCount ? t('{0} broken', s.brokenCount) : '',
+      detail: s.config,
+      session: s,
+    })),
+    { title: t('Which settings file?') },
+  );
+  return picked?.session;
+}
+
+/** The status bar item, over every session: a long sync, else how many things are broken. */
+function updateStatus(): void {
+  if (!status) {
+    return;
+  }
+  const broken = sessions.reduce((n, s) => n + s.brokenCount, 0);
+  if (sessions.some((s) => s.syncingLong)) {
+    status.text = `$(sync~spin) mixenc`;
+    status.tooltip = t('mixenc is mirroring the repositories');
+    status.show();
+  } else if (broken > 0) {
+    status.text = `$(warning) mixenc ${broken}`;
+    status.tooltip = t('mixenc: {0} things are broken. Click to see them.', broken);
+    status.show();
+  } else {
+    status.hide();
+  }
 }
 
 function exePath(): string {
   return vscode.workspace.getConfiguration('mixenc').get<string>('path') || 'mixenc';
 }
 
-/** The folder with mixenc.json: the setting, else the folders open and those above them. */
-function findWorkspace(): string | undefined {
-  const configured = vscode.workspace.getConfiguration('mixenc').get<string>('workspace');
-  if (configured && fs.existsSync(path.join(configured, 'mixenc.json'))) {
+/**
+ * The window's settings files: `mixenc.configs` (relative to the .code-workspace), else the older
+ * `mixenc.workspace`, else a mixenc.json in an open folder or above it.
+ */
+function findConfigs(): string[] {
+  const config = vscode.workspace.getConfiguration('mixenc');
+  const file = vscode.workspace.workspaceFile;
+  const base =
+    file?.scheme === 'file' ? path.dirname(file.fsPath) : (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '');
+  const configured = configFiles(config.get('configs'), config.get('workspace'), base).filter((f) => fs.existsSync(f));
+  if (configured.length) {
     return configured;
   }
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     let dir = folder.uri.fsPath;
     for (;;) {
       if (fs.existsSync(path.join(dir, 'mixenc.json'))) {
-        return dir;
+        return [path.join(dir, 'mixenc.json')];
       }
       const up = path.dirname(dir);
       if (up === dir) {
@@ -95,18 +169,20 @@ function findWorkspace(): string | undefined {
       dir = up;
     }
   }
-  return undefined;
+  return [];
 }
 
 export class Session implements vscode.Disposable {
   readonly mixenc: Mixenc;
-  private readonly status = vscode.window.createStatusBarItem('mixenc.status', vscode.StatusBarAlignment.Left, 0);
+  /** The folder of the settings file: what the paths in it and in the report start from. */
+  readonly root: string;
   private readonly problems = vscode.languages.createDiagnosticCollection('mixenc');
   private readonly disposables: vscode.Disposable[] = [];
   /** Files that are not plain UTF-8, by path key. */
   files = new Map<string, FileInfo>();
   report: Report | undefined;
-  private broken = 0;
+  brokenCount = 0;
+  syncingLong = false;
   private syncing: Promise<void> | undefined;
   private again = false;
   private timer: NodeJS.Timeout | undefined;
@@ -118,13 +194,12 @@ export class Session implements vscode.Disposable {
   ready: Promise<void> = Promise.resolve();
 
   constructor(
-    readonly root: string,
+    readonly config: string,
     exe: string,
     private readonly log: vscode.LogOutputChannel,
   ) {
-    this.mixenc = new Mixenc(exe, root, (m) => log.info(m));
-    this.status.name = 'mixenc';
-    this.status.command = 'mixenc.diagnose';
+    this.root = path.dirname(config);
+    this.mixenc = new Mixenc(exe, this.root, (m) => log.info(m), config);
   }
 
   async start(): Promise<void> {
@@ -148,11 +223,13 @@ export class Session implements vscode.Disposable {
       w.onDidDelete(then);
       this.disposables.push(w);
     };
-    watch(this.root, 'mixenc.json', () => this.schedule(500));
+    watch(this.root, path.basename(this.config), () => this.schedule(500));
     for (const repo of this.repos()) {
       // A checkout, merge or pull changes the index; mirror after it.
       watch(repo, '.git/{HEAD,index}', () => this.schedule(2000));
     }
+    // Its repositories find the settings file through the register (Copilot's hooks, the gate).
+    void this.mixenc.run(['register']);
     this.ready = this.sync(false);
     await this.ready;
   }
@@ -160,14 +237,13 @@ export class Session implements vscode.Disposable {
   dispose(): void {
     clearTimeout(this.timer);
     this.disposables.forEach((d) => d.dispose());
-    this.status.dispose();
     this.problems.dispose();
     this.page?.dispose();
   }
 
   private repos(): string[] {
     try {
-      const config = JSON.parse(fs.readFileSync(path.join(this.root, 'mixenc.json'), 'utf8')) as {
+      const config = JSON.parse(fs.readFileSync(this.config, 'utf8')) as {
         repos?: Array<{ path: string }>;
       };
       return (config.repos ?? []).map((r) => path.resolve(this.root, r.path));
@@ -194,7 +270,10 @@ export class Session implements vscode.Disposable {
     }
     this.syncing = (async () => {
       // Only a sync that takes a while shows itself.
-      const slow = setTimeout(() => this.showProgress(), rebuild ? 0 : 2000);
+      const slow = setTimeout(() => {
+        this.syncingLong = true;
+        updateStatus();
+      }, rebuild ? 0 : 2000);
       try {
         const r = await this.mixenc.run(rebuild ? ['sync', '--rebuild', '--json'] : ['sync', '--json']);
         if (r.code >= 2) {
@@ -203,6 +282,7 @@ export class Session implements vscode.Disposable {
         this.lastSync = Date.now();
       } finally {
         clearTimeout(slow);
+        this.syncingLong = false;
       }
       await this.refresh();
     })();
@@ -217,12 +297,6 @@ export class Session implements vscode.Disposable {
     }
   }
 
-  private showProgress(): void {
-    this.status.text = `$(sync~spin) mixenc`;
-    this.status.tooltip = t('mixenc is mirroring the repositories');
-    this.status.show();
-  }
-
   /** Reads the doctor's report and the file list, and shows them. */
   async refresh(): Promise<void> {
     const [report, files] = await Promise.all([
@@ -230,23 +304,19 @@ export class Session implements vscode.Disposable {
         this.log.error(`doctor: ${e}`);
         return undefined;
       }),
-      this.mixenc.json<{ files: FileInfo[] }>(['files']).catch((e) => {
+      this.mixenc.json<{ files: FileInfo[]; roots?: string[] }>(['files']).catch((e) => {
         this.log.error(`files: ${e}`);
-        return { files: [] as FileInfo[] };
+        return { files: [] as FileInfo[], roots: undefined };
       }),
     ]);
     this.report = report;
     this.files = new Map(files.files.map((f) => [pathKey(f.path), f]));
-    this.broken = report?.summary.broken ?? 0;
-    if (this.broken > 0) {
-      this.status.text = `$(warning) mixenc ${this.broken}`;
-      this.status.tooltip = t('mixenc: {0} things are broken. Click to see them.', this.broken);
-      this.status.show();
-    } else {
-      this.status.hide();
-    }
+    this.brokenCount = report?.summary.broken ?? 0;
+    updateStatus();
     this.showProblems(files.files);
-    await this.updateReadonly(files.files);
+    if (files.roots) {
+      await this.updateReadonly(files.roots, files.files);
+    }
     for (const d of vscode.workspace.textDocuments) {
       await this.ensureEncoding(d);
     }
@@ -289,17 +359,21 @@ export class Session implements vscode.Disposable {
   }
 
   /** Mixed and broken files read-only, in the .code-workspace (never in a repository's settings). */
-  private async updateReadonly(files: FileInfo[]): Promise<void> {
+  private async updateReadonly(roots: string[], files: FileInfo[]): Promise<void> {
     const file = vscode.workspace.workspaceFile;
     if (!file || file.scheme !== 'file') {
       return;
     }
-    const config = vscode.workspace.getConfiguration('files');
-    const current = config.inspect<Record<string, boolean>>('readonlyInclude')?.workspaceValue;
-    const next = readonlyInclude(current, this.root, files);
-    if (next) {
-      await config.update('readonlyInclude', next, vscode.ConfigurationTarget.Workspace);
-    }
+    const update = async () => {
+      const config = vscode.workspace.getConfiguration('files');
+      const current = config.inspect<Record<string, boolean>>('readonlyInclude')?.workspaceValue;
+      const next = readonlyInclude(current, roots, files);
+      if (next) {
+        await config.update('readonlyInclude', next, vscode.ConfigurationTarget.Workspace);
+      }
+    };
+    writing = writing.then(update, update);
+    await writing;
   }
 
   /** Opens a file again in its encoding when VS Code opened it in another. */
@@ -440,7 +514,7 @@ export class Session implements vscode.Disposable {
   private async onPageMessage(m: { type: string; path: string; read?: string }, deep: boolean): Promise<void> {
     try {
       if (m.type === 'open') {
-        // Paths in the report are relative to the workspace, maybe with a note after them.
+        // Paths in the report are relative to the settings file's folder, maybe with a note after them.
         const p = m.path.replace(/ \(.*\)$/, '');
         await vscode.window.showTextDocument(vscode.Uri.file(path.resolve(this.root, p)));
       } else if (m.type === 'override' && m.read) {
@@ -459,27 +533,72 @@ export class Session implements vscode.Disposable {
   }
 }
 
-/** "Create a workspace": mixenc.json for the repositories (and documents), the mirror, the .code-workspace. */
-async function createWorkspace(log: vscode.LogOutputChannel): Promise<void> {
-  const pick = (title: string, many: boolean, defaultUri?: vscode.Uri) =>
-    vscode.window.showOpenDialog({ title, canSelectFolders: true, canSelectFiles: false, canSelectMany: many, defaultUri });
-  const root = (await pick(t('The workspace folder (mixenc.json and the mirror go here)'), false))?.[0];
-  if (!root) {
+/**
+ * "Add a repository to this window": its settings file (a new one, with the mirror outside git, or
+ * one there already), its first mirror, and mixenc's items in the .code-workspace (the open one,
+ * else a new one). mixenc does each step; the changes are shown before they are written.
+ */
+async function addRepository(log: vscode.LogOutputChannel): Promise<void> {
+  const folder = async (title: string, defaultUri?: vscode.Uri) =>
+    (await vscode.window.showOpenDialog({ title, canSelectFolders: true, canSelectFiles: false, defaultUri }))?.[0];
+  const open = vscode.workspace.workspaceFile?.scheme === 'file' ? vscode.workspace.workspaceFile : undefined;
+  const near = open ? vscode.Uri.file(path.dirname(open.fsPath)) : vscode.workspace.workspaceFolders?.[0]?.uri;
+  const exe = exePath();
+
+  const how = await vscode.window.showQuickPick(
+    [
+      { label: t('A new settings file'), detail: t('For a repository: where its mirror goes, and where the settings file goes (a vault in git is fine)'), make: true },
+      { label: t('A settings file there already'), detail: t('A mixenc.json or <name>.mixenc.json'), make: false },
+    ],
+    { title: t('mixenc: Add a repository to this window') },
+  );
+  if (!how) {
     return;
   }
-  const mixenc = new Mixenc(exePath(), root.fsPath, (m) => log.info(m));
-  if (!fs.existsSync(path.join(root.fsPath, 'mixenc.json'))) {
-    const repos = await pick(t('The repositories (their originals stay where they are)'), true, root);
-    if (!repos?.length) {
+  let config: string;
+  if (how.make) {
+    const repo = await folder(t('The repository (its originals stay where they are)'), near);
+    if (!repo) {
       return;
     }
-    const wiki = await pick(t('The documents (Wiki) to open beside them; cancel for none'), false, root);
-    const args = ['init', ...repos.flatMap((r) => ['--repo', r.fsPath]), ...(wiki?.[0] ? ['--wiki', wiki[0].fsPath] : [])];
-    const r = await mixenc.run(args);
+    const mirror = await folder(t('Where the mirrors go (outside git; they can be made again)'), near);
+    if (!mirror) {
+      return;
+    }
+    const target = await vscode.window.showSaveDialog({
+      title: t('The settings file (keep it beside the .code-workspace, such as in your vault)'),
+      defaultUri: vscode.Uri.joinPath(near ?? mirror, `${path.basename(repo.fsPath)}.mixenc.json`),
+      filters: { mixenc: ['json'] },
+    });
+    if (!target) {
+      return;
+    }
+    config = target.fsPath;
+    const r = await new Mixenc(exe, path.dirname(config), (m) => log.info(m)).run([
+      'init',
+      '--config',
+      config,
+      '--repo',
+      repo.fsPath,
+      '--mirror',
+      mirror.fsPath,
+    ]);
     if (r.code !== 0) {
       throw new Error(r.stderr.trim());
     }
+  } else {
+    const picked = await vscode.window.showOpenDialog({
+      title: t('The settings file'),
+      canSelectFiles: true,
+      defaultUri: near,
+      filters: { mixenc: ['json'] },
+    });
+    if (!picked?.[0]) {
+      return;
+    }
+    config = picked[0].fsPath;
   }
+  const mixenc = new Mixenc(exe, path.dirname(config), (m) => log.info(m), config);
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: t('mixenc: making the mirror (the first time takes a while)') },
     async () => {
@@ -489,6 +608,31 @@ async function createWorkspace(log: vscode.LogOutputChannel): Promise<void> {
       }
     },
   );
-  const written = await mixenc.json<{ path: string }>(['workspace']);
-  await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(written.path));
+
+  const codeWorkspace =
+    open ??
+    (await vscode.window.showSaveDialog({
+      title: t('The .code-workspace to open (a new one)'),
+      defaultUri: vscode.Uri.file(path.join(path.dirname(config), 'dev.code-workspace')),
+      filters: { 'VS Code workspace': ['code-workspace'] },
+    }));
+  if (!codeWorkspace) {
+    return;
+  }
+  const dry = await mixenc.json<{ changes: string[] }>(['workspace', codeWorkspace.fsPath, '--dry-run']);
+  if (dry.changes.length) {
+    const go = t('Write');
+    const answer = await vscode.window.showInformationMessage(
+      t('mixenc adds these to {0}', path.basename(codeWorkspace.fsPath)),
+      { modal: true, detail: dry.changes.join('\n') },
+      go,
+    );
+    if (answer !== go) {
+      return;
+    }
+    await mixenc.json(['workspace', codeWorkspace.fsPath]);
+  }
+  if (!open) {
+    await vscode.commands.executeCommand('vscode.openFolder', codeWorkspace);
+  }
 }

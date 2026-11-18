@@ -130,7 +130,7 @@ pub fn run(ws: &Workspace, opts: &Options, progress: &(dyn Fn(usize, usize, &str
             Severity::Ok => summary.ok += 1,
         }
     }
-    Ok(Report { format_version: crate::doctor::FORMAT_VERSION, workspace: paths::display(&ws.root), summary, items })
+    Ok(Report { format_version: crate::doctor::FORMAT_VERSION, workspace: paths::display(&ws.path), summary, items })
 }
 
 fn item(

@@ -1,11 +1,13 @@
 {
   "description": "Shift_JIS（CP932）・UTF-8 などが混ざった C/C++ のリポを正しく見せる。ファイルをその文字コードで開き、mixenc の写しを最新に保ち、崩れた時だけ知らせる。",
-  "command.createWorkspace": "ワークスペースを作る",
+  "command.addRepository": "この窓にリポを足す",
   "command.diagnose": "診断",
   "command.diagnoseDeep": "深い診断（全部の翻訳単位を clangd で）",
   "command.rebuild": "写しを作り直す",
-  "command.openConfig": "mixenc.json（上書き表）を開く",
-  "config.path": "mixenc の exe（既定は PATH の mixenc）。mixenc が書くワークスペースが設定する。",
-  "config.workspace": "mixenc.json があるフォルダ。mixenc が書くワークスペースが設定する。無ければ、開いたフォルダとその上を探す。",
-  "untrusted": "信頼していないワークスペースでは、ワークスペースの設定ではなく PATH の mixenc を起こす。"
+  "command.openConfig": "設定ファイル（上書き表）を開く",
+  "config.path": "mixenc の exe（既定は PATH の mixenc）。`mixenc workspace` が設定する。",
+  "config.workspace": "mixenc.json があるフォルダ（前の設定。mixenc.configs に替わった）。",
+  "untrusted": "信頼していないワークスペースでは、ワークスペースの設定ではなく PATH の mixenc を起こす。",
+  "config.configs": "この窓が使う設定ファイル（mixenc.json か <名前>.mixenc.json。.code-workspace からの相対か絶対。リポごとに 1 枚が既定）。`mixenc workspace` が足す。",
+  "config.workspace.deprecated": "mixenc.configs を使う（`mixenc workspace` が書く）。"
 }

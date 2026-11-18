@@ -26,7 +26,10 @@ pub struct WsRoot {
 pub fn roots(ws: &Workspace) -> Vec<WsRoot> {
     let mut out = Vec::new();
     for repo in ws.repos() {
-        match RepoState::load(&repo.mirror) {
+        // The state of this repository's mirror (not of another original's, set there by mistake).
+        let state = RepoState::load(&repo.mirror)
+            .filter(|s| paths::key(&s.source) == paths::key(&repo.source.to_string_lossy()));
+        match state {
             Some(state) => out.extend(state.roots.iter().map(|r| WsRoot {
                 repo: repo.clone(),
                 root: Root { source: PathBuf::from(&r.source), mirror: PathBuf::from(&r.mirror) },

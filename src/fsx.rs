@@ -105,6 +105,11 @@ pub fn set_read_only(path: &Path, read_only: bool) -> io::Result<()> {
 
 /// The files under `root`, as paths relative to it with `/`, skipping the folders `skip` says.
 pub fn walk(root: &Path, skip: &dyn Fn(&str) -> bool) -> io::Result<Vec<String>> {
+    walk_with(root, &|rel, _| skip(rel))
+}
+
+/// [`walk`], with whether the entry is a folder.
+pub fn walk_with(root: &Path, skip: &dyn Fn(&str, bool) -> bool) -> io::Result<Vec<String>> {
     let mut files = Vec::new();
     let mut stack = vec![(root.to_path_buf(), String::new())];
     while let Some((dir, rel)) = stack.pop() {
@@ -119,10 +124,10 @@ pub fn walk(root: &Path, skip: &dyn Fn(&str) -> bool) -> io::Result<Vec<String>>
             let child = if rel.is_empty() { name } else { format!("{rel}/{name}") };
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                if !skip(&child) {
+                if !skip(&child, true) {
                     stack.push((entry.path(), child));
                 }
-            } else if !skip(&child) {
+            } else if !skip(&child, false) {
                 files.push(child);
             }
         }

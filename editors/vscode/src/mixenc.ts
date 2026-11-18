@@ -20,9 +20,14 @@ export class Mixenc {
     readonly exe: string,
     readonly cwd: string,
     private readonly log: (message: string) => void,
+    /** The settings file each run is about (`--config`). */
+    readonly config?: string,
   ) {}
 
   run(args: string[], options: RunOptions = {}): Promise<Run> {
+    if (this.config) {
+      args = [...args, '--config', this.config];
+    }
     this.log(`mixenc ${args.join(' ')}`);
     return new Promise((resolve, reject) => {
       const child = spawn(this.exe, args, { cwd: this.cwd, windowsHide: true, signal: options.signal });

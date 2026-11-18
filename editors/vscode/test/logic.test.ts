@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   type FileInfo,
+  configFiles,
   editorEncoding,
   globLiteral,
   needsChoice,
@@ -59,12 +60,25 @@ test('only files that need care are problems', () => {
 });
 
 test('the read-only list keeps what is not mixenc\'s', () => {
-  const root = 'C:\\w';
+  const roots = ['C:\\w\\repos\\r1', 'D:\\vendor\\inc'];
   const files = [file('mixed', { path: 'C:\\w\\repos\\r1\\m[1].cpp', readonly: true }), file('cp932')];
-  const next = readonlyInclude({ 'C:/other/x.h': true, 'C:/w/repos/r1/old.cpp': true }, root, files);
+  const current = { 'C:/other/x.h': true, 'C:/w/repos/r1/old.cpp': true, 'd:/vendor/inc/gone.h': true };
+  const next = readonlyInclude(current, roots, files);
   assert.deepEqual(next, { 'C:/other/x.h': true, 'C:/w/repos/r1/m[[]1[]].cpp': true });
-  assert.equal(readonlyInclude(next, root, files), undefined, 'nothing to change');
+  assert.equal(readonlyInclude(next, roots, files), undefined, 'nothing to change');
   assert.equal(globLiteral('C:\\a{b}*.h'), 'C:/a[{]b[}][*].h');
+});
+
+test('the settings files of the window', () => {
+  const base = 'C:\\vault';
+  assert.deepEqual(configFiles(['a.mixenc.json', '../x/b.mixenc.json', 'D:/c.mixenc.json', 'A.MIXENC.JSON'], undefined, base), [
+    'C:\\vault\\a.mixenc.json',
+    'C:\\x\\b.mixenc.json',
+    'D:/c.mixenc.json',
+  ]);
+  assert.deepEqual(configFiles(undefined, 'C:\\ws', base), ['C:\\ws\\mixenc.json'], 'the older setting');
+  assert.deepEqual(configFiles(['a.mixenc.json'], 'C:\\ws', base), ['C:\\vault\\a.mixenc.json'], 'the new one wins');
+  assert.deepEqual(configFiles(undefined, undefined, base), []);
 });
 
 test('small readers', () => {

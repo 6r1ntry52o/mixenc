@@ -121,6 +121,12 @@ impl Client {
     }
 
     fn start_at(f: &Fixture, clangd: &Path, folder: &Path) -> Client {
+        Client::start_with(f, clangd, &[folder], &[])
+    }
+
+    /// The entry for these folders, with more arguments (`--mixenc-config <file>`).
+    fn start_with(f: &Fixture, clangd: &Path, folders: &[&Path], extra: &[String]) -> Client {
+        let folder = folders[0];
         let log = fs::File::create(f.ws.join(format!(
             "entry-{}.log",
             SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos()
@@ -128,6 +134,7 @@ impl Client {
         .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_mixenc"))
             .args(["clangd", "--background-index", "--log=verbose"])
+            .args(extra)
             .env("MIXENC_CLANGD", clangd)
             .current_dir(std::env::temp_dir())
             .stdin(Stdio::piped())
@@ -148,9 +155,10 @@ impl Client {
         });
         let mut client = Client { child, stdin, messages: rx, next: 0, diagnostics: Vec::new(), shown: Vec::new() };
         let root = uri(folder);
+        let workspace_folders: Vec<Value> = folders.iter().map(|d| json!({"uri": uri(d), "name": "folder"})).collect();
         client.request(
             "initialize",
-            json!({"processId": null, "rootUri": root, "workspaceFolders": [{"uri": root, "name": "cloneA"}], "capabilities": {}}),
+            json!({"processId": null, "rootUri": root, "workspaceFolders": workspace_folders, "capabilities": {}}),
         );
         client.notify("initialized", json!({}));
         client
@@ -435,4 +443,70 @@ fn without_a_workspace_it_passes_through() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
+}
+
+/// Stage 6: two repositories with a settings file each, kept in a vault in git, their mirrors
+/// outside it; one entry (an editor has one clangd for all its folders) serves both.
+#[test]
+fn one_entry_serves_the_settings_files_of_a_window() {
+    let Some(clangd) = find_clangd() else { return };
+    let f = fixture();
+    let base = f.ws.parent().unwrap().to_path_buf();
+    let repo_b = base.join("src").join("cloneB");
+    let crlf = |s: &str| s.replace('\n', "\r\n");
+    write(&repo_b.join("lib/sho.h"), &sjis(&crlf("#pragma once\n// 表\n/* 能 */ int shown_b(int);\n")));
+    write(
+        &repo_b.join("lib/use.cpp"),
+        &sjis(&crlf("#include \"sho.h\"\n// ソ\nint use() { const char* s = \"表示\"; return shown_b(2); }\n")),
+    );
+    let lib = repo_b.join("lib");
+    let db = json!([{
+        "directory": lib.display().to_string(),
+        "file": lib.join("use.cpp").display().to_string(),
+        "arguments": ["cl.exe", "/c", format!("/I{}", lib.display()), "/source-charset:shift_jis", "use.cpp"],
+    }]);
+    write(&repo_b.join("compile_commands.json"), db.to_string().as_bytes());
+    write(&repo_b.join(".gitignore"), b"compile_commands.json\n");
+    for args in [&["init", "-q"][..], &["add", "-A"]] {
+        assert!(Command::new("git").args(args).current_dir(&repo_b).status().unwrap().success());
+    }
+    let vault = base.join("vault");
+    fs::create_dir_all(&vault).unwrap();
+    assert!(Command::new("git").args(["init", "-q"]).current_dir(&vault).status().unwrap().success());
+    write(
+        &vault.join("cloneA.mixenc.json"),
+        br#"{"mirror": "../mirror", "repos": [{"path": "../ws/repos/cloneA", "db": "../ws/repos/cloneA/compile_commands.json"}]}"#,
+    );
+    write(
+        &vault.join("cloneB.mixenc.json"),
+        br#"{"mirror": "../mirror", "repos": [{"path": "../src/cloneB", "db": "../src/cloneB/compile_commands.json"}]}"#,
+    );
+    let configs: Vec<String> = ["cloneA", "cloneB"]
+        .iter()
+        .flat_map(|n| ["--mixenc-config".to_string(), vault.join(format!("{n}.mixenc.json")).display().to_string()])
+        .collect();
+    let mut c = Client::start_with(&f, &clangd, &[&vault, &f.repo, &repo_b], &configs);
+
+    let a = uri(&f.repo.join("src/a.cpp"));
+    let text_a = A.replace('\n', "\r\n");
+    c.open(&a, &text_a);
+    assert_eq!(c.diagnostics_of(&a), Vec::<String>::new());
+    let hidden = c.definition(&a, 4, column(&text_a, 4, "hidden"));
+    assert!(in_original(&hidden[0], "hyo.h"), "{hidden:?}");
+
+    let u = uri(&repo_b.join("lib/use.cpp"));
+    let text_b = crlf("#include \"sho.h\"\n// ソ\nint use() { const char* s = \"表示\"; return shown_b(2); }\n");
+    c.open(&u, &text_b);
+    assert_eq!(c.diagnostics_of(&u), Vec::<String>::new(), "cloneB is read from its mirror too");
+    let shown = c.definition(&u, 2, column(&text_b, 2, "shown_b"));
+    assert!(in_original(&shown[0], "sho.h"), "{shown:?}");
+    assert_eq!(shown[0]["range"]["start"]["line"], 2);
+    c.stop();
+
+    // Both mirrors are outside the vault, and git there sees only the settings files.
+    assert!(base.join(r"mirror\cloneA\src\a.cpp").is_file() && base.join(r"mirror\cloneB\lib\use.cpp").is_file());
+    let status = Command::new("git").args(["status", "--porcelain", "-uall"]).current_dir(&vault).output().unwrap();
+    let status = String::from_utf8(status.stdout).unwrap();
+    assert_eq!(status.lines().count(), 2, "{status}");
+    assert!(status.lines().all(|l| l.ends_with(".mixenc.json")), "{status}");
 }

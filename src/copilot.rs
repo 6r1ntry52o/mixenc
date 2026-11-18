@@ -537,7 +537,7 @@ fn session_context(cwd: &Path) -> Option<String> {
          - Reading: view/read of such a file shows its UTF-8 mirror (the same lines), and grep's answers include them read right. The mixenc MCP tools read_lines and search do the same.\n\
          - Writing: change them only with the mixenc MCP tools edit and create, which keep each file's encoding and every untouched line's bytes. Built-in edit, create and apply_patch are stopped for them; shell commands that write them are stopped by the commit gate.\n\
          - Code structure: ask clangd through the mixenc MCP tools (find_symbol, definition, references, call_hierarchy, type_hierarchy, outline), or hand the question to the mixenc-analyst agent, before searching text.",
-        paths::display(&ws.root),
+        paths::display(&ws.path),
         names.join(", ")
     );
     let (tx, rx) = std::sync::mpsc::channel();

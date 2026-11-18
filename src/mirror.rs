@@ -55,8 +55,35 @@ pub fn wanted_read_as(judged: Encoding, read_as: Option<ReadAs>) -> Option<Encod
     }
 }
 
+/// A mirror remembers its original (its index, and a repository's mirror its `repo.json` too): a
+/// mirror folder that holds another original's mirror is not written, so that a mistake in the
+/// settings cannot turn one mirror into another (the sync would remove the other's files). Nothing
+/// there yet: it is free.
+pub fn check_owner(root: &Root) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct Owner {
+        source: String,
+    }
+    let state = root.mirror.join(STATE_DIR);
+    let owner = [Index::path(&root.mirror), state.join("repo.json")]
+        .iter()
+        .filter_map(|p| fs::read_to_string(p).ok())
+        .find_map(|text| serde_json::from_str::<Owner>(&text).ok());
+    let Some(owner) = owner else { return Ok(()) };
+    if paths::key(&owner.source) != paths::key(&root.source.to_string_lossy()) {
+        anyhow::bail!(
+            "{} is the mirror of {}, not of {}: give this one a mirror of its own in the settings, or remove that folder if its original is gone (a mirror can be made again)",
+            paths::display(&root.mirror),
+            owner.source,
+            paths::display(&root.source)
+        );
+    }
+    Ok(())
+}
+
 /// Mirrors `files` (relative to the root, with `/`) and removes what is no longer among them.
 pub fn sync(root: &Root, files: Vec<String>, read_as: &(dyn Fn(&Path) -> Option<ReadAs> + Sync)) -> Result<Outcome> {
+    check_owner(root)?;
     let state_dir = root.mirror.join(STATE_DIR);
     fs::create_dir_all(&state_dir).with_context(|| format!("creating {}", paths::display(&state_dir)))?;
     let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(state_dir.join("lock"))?;
@@ -120,6 +147,7 @@ pub fn sync_files(
     files: &[String],
     read_as: &(dyn Fn(&Path) -> Option<ReadAs> + Sync),
 ) -> Result<Outcome> {
+    check_owner(root)?;
     let state_dir = root.mirror.join(STATE_DIR);
     fs::create_dir_all(&state_dir).with_context(|| format!("creating {}", paths::display(&state_dir)))?;
     let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(state_dir.join("lock"))?;
@@ -302,10 +330,14 @@ fn unreadable(prev: Option<&FileState>, target: &Path, err: std::io::Error) -> S
 fn remove_extras(root: &Root, index: &Index) -> Result<usize> {
     let keep: HashSet<String> =
         index.files.iter().filter(|(_, s)| s.mirror.is_some()).map(|(rel, _)| rel.to_lowercase()).collect();
-    let extras: Vec<String> = fsx::walk(&root.mirror, &|rel| is_reserved(rel))?
-        .into_iter()
-        .filter(|rel| !keep.contains(&rel.to_lowercase()))
-        .collect();
+    // A folder with an index of its own is another mirror (set inside this one by mistake): left
+    // alone. Only folders are looked at, not every file.
+    let extras: Vec<String> = fsx::walk_with(&root.mirror, &|rel, is_dir| {
+        is_reserved(rel) || (is_dir && Index::exists(&paths::join_rel(&root.mirror, rel)))
+    })?
+    .into_iter()
+    .filter(|rel| !keep.contains(&rel.to_lowercase()))
+    .collect();
     for rel in &extras {
         let target = paths::join_rel(&root.mirror, rel);
         fsx::remove(&target).with_context(|| format!("removing {}", paths::display(&target)))?;

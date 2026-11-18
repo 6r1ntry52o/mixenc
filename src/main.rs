@@ -23,21 +23,34 @@ struct Cli {
     /// Print JSON (for editors and scripts)
     #[arg(long, global = true)]
     json: bool,
+    /// The settings file (mixenc.json or <name>.mixenc.json) instead of the one found from the
+    /// folder; `init` writes it; `workspace` takes several
+    #[arg(long = "config", global = true, value_name = "FILE")]
+    configs: Vec<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Write mixenc.json in the current folder (the workspace), for one or more repositories
+    /// Write a settings file for a repository (or more): mixenc.json in the current folder, or the
+    /// file --config names (such as <vault>/cloneA.mixenc.json; it may be kept in git, the
+    /// mirrors then go outside it with --mirror). Registers it when a repository is outside its
+    /// folder
     Init {
-        /// A repository's folder (repeat for more)
+        /// A repository's folder (repeat for more; one per settings file is the usual)
         #[arg(long = "repo", required = true, value_name = "DIR")]
         repos: Vec<String>,
+        /// Where the mirrors go (default: `mirror` beside the settings file; needed when that is in git)
+        #[arg(long, value_name = "DIR")]
+        mirror: Option<String>,
         /// The first repository's documents
         #[arg(long, value_name = "DIR")]
         wiki: Option<String>,
     },
+    /// Register settings files (default: the one found from the folder), so that their
+    /// repositories find them (Copilot's hooks, the commit gate, the analysis tools)
+    Register { files: Vec<PathBuf> },
     /// Mirror the repositories and the include folders outside them, and write the mirror databases
     Sync {
         /// Only this repository (its name in mixenc.json)
@@ -63,15 +76,25 @@ enum Command {
         #[arg(long, requires = "deep")]
         update_baseline: bool,
     },
-    /// Write `<name>.code-workspace` for VS Code: the repositories and their documents, clangd
-    /// through the entry, mixed and broken files read-only
+    /// Add mixenc's items to a VS Code .code-workspace (made when it is not there): the
+    /// repositories as folders, the settings files (--config, repeat for more), clangd through the
+    /// entry, mixed and broken files read-only. Everything else in the file (other folders,
+    /// settings, comments) stays. Adding the same again changes nothing.
+    ///
+    /// For an agent asked to set up a window: do not edit the .code-workspace or the settings files
+    /// by hand. For each C/C++ repository, ask for (or agree on) the mirror folder (outside git)
+    /// and where its settings file goes, then run
+    ///   mixenc init --config <vault>/<repo>.mixenc.json --repo <repo> --mirror <folder>
+    /// once per repository, then
+    ///   mixenc workspace <the .code-workspace> --config <vault>/<repo>.mixenc.json ... --dry-run
+    /// show the person the changes, and run it again without --dry-run.
+    #[command(verbatim_doc_comment)]
     Workspace {
-        /// The file's name (default: the first repository's)
+        /// The .code-workspace (default: <first repository>.code-workspace beside the settings file)
+        file: Option<PathBuf>,
+        /// Print the changes and write nothing
         #[arg(long)]
-        name: Option<String>,
-        /// Replace a file of that name mixenc did not write
-        #[arg(long)]
-        force: bool,
+        dry_run: bool,
     },
     /// Print the workspace that holds a folder or file (exit code 1 when none does)
     Where {
@@ -242,26 +265,70 @@ fn main() -> ExitCode {
     }
 }
 
+/// The workspace of `--config`, else the one found from the folder.
+fn workspace(cli: &Cli, dir: &std::path::Path) -> Result<Workspace> {
+    match cli.configs.as_slice() {
+        [] => Workspace::find(dir),
+        [one] => Workspace::load_file(&dir.join(one)),
+        _ => anyhow::bail!("this command takes one --config"),
+    }
+}
+
 fn run(cli: &Cli) -> Result<u8> {
     let dir = match &cli.dir {
         Some(dir) => dir.clone(),
         None => std::env::current_dir()?,
     };
     match &cli.command {
-        Command::Init { repos, wiki } => {
-            let file = config::init(&dir, repos, wiki.as_deref())?;
+        Command::Init { repos, mirror, wiki } => {
+            let file = match cli.configs.as_slice() {
+                [] => None,
+                [one] => Some(one.as_path()),
+                _ => anyhow::bail!("init writes one settings file (one --config)"),
+            };
+            let init = config::Init { dir: &dir, file, repos, wiki: wiki.as_deref(), mirror: mirror.as_deref() };
+            let file = config::init(&init)?;
             if cli.json {
                 println!("{}", json!({ "config": paths::display(&file) }));
             } else {
-                println!("wrote {}; next: mixenc sync", paths::display(&file));
+                println!("wrote {}; next: mixenc sync --config {0}", paths::display(&file));
+            }
+            Ok(0)
+        }
+        Command::Register { files } => {
+            let files: Vec<PathBuf> = if files.is_empty() {
+                vec![workspace(cli, &dir)?.path]
+            } else {
+                files.iter().map(|f| dir.join(f)).collect()
+            };
+            let mut out = Vec::new();
+            for f in &files {
+                let ws = Workspace::load_file(f)?;
+                let added = config::register(&ws.path)?;
+                out.push(json!({ "config": paths::display(&ws.path), "added": added }));
+                if !cli.json {
+                    println!(
+                        "{} {}",
+                        if added { "registered" } else { "already registered:" },
+                        paths::display(&ws.path)
+                    );
+                }
+            }
+            if cli.json {
+                println!("{}", json!({ "registered": out }));
             }
             Ok(0)
         }
         Command::Sync { repo, rebuild } => {
-            let ws = Workspace::find(&dir)?;
+            let ws = workspace(cli, &dir)?;
             if *rebuild {
-                // Without its index a mirror is read and written anew, file by file.
+                // Without its index a mirror is read and written anew, file by file (only a mirror
+                // of this original: another one's is not taken).
+                for r in ws.repos() {
+                    mixenc::mirror::check_owner(&mixenc::mirror::Root { source: r.source, mirror: r.mirror })?;
+                }
                 for at in mixenc::locate::roots(&ws) {
+                    mixenc::mirror::check_owner(&at.root)?;
                     if repo.as_deref().is_none_or(|n| at.repo.name.eq_ignore_ascii_case(n)) {
                         let index = mixenc::index::Index::path(&at.root.mirror);
                         if index.is_file() {
@@ -280,7 +347,7 @@ fn run(cli: &Cli) -> Result<u8> {
             Ok(u8::from(not_mirrored || results.iter().any(|r| !r.state.db_problems.is_empty())))
         }
         Command::Doctor { limit, deep, jobs, update_baseline } => {
-            let ws = Workspace::find(&dir)?;
+            let ws = workspace(cli, &dir)?;
             let report = if *deep {
                 let opts = mixenc::deep::Options { jobs: *jobs, update_baseline: *update_baseline };
                 let json = cli.json;
@@ -336,20 +403,56 @@ fn run(cli: &Cli) -> Result<u8> {
             Ok(0)
         }
         Command::Mcp => {
-            mcp::serve()?;
+            let workspaces = cli.configs.iter().map(|c| Workspace::load_file(&dir.join(c))).collect::<Result<_>>()?;
+            mcp::serve(workspaces)?;
             Ok(0)
         }
         Command::Hooks { command } => run_hooks(cli, &dir, command),
-        Command::Workspace { name, force } => {
-            let ws = Workspace::find(&dir)?;
-            let path = mixenc::codews::write(&ws, &std::env::current_exe()?, name.as_deref(), *force)?;
-            let copilot = mixenc::codews::copilot_command(&ws);
-            if cli.json {
-                println!("{}", json!({ "path": paths::display(&path), "copilot": copilot }));
+        Command::Workspace { file, dry_run } => {
+            let workspaces: Vec<Workspace> = if cli.configs.is_empty() {
+                vec![Workspace::find(&dir)?]
             } else {
-                println!("wrote {}", paths::display(&path));
-                if let Some(c) = copilot {
-                    println!("Copilot CLI with the documents at hand (in a repository): {c}");
+                cli.configs.iter().map(|c| Workspace::load_file(&dir.join(c))).collect::<Result<_>>()?
+            };
+            let file = match file {
+                Some(f) => dir.join(f),
+                None => {
+                    let first = &workspaces[0];
+                    let name = first.repos().first().map(|r| r.name.clone()).unwrap_or_else(|| "mixenc".into());
+                    first.root.join(format!("{name}.code-workspace"))
+                }
+            };
+            let added = mixenc::codews::add(&file, &workspaces, &std::env::current_exe()?, *dry_run)?;
+            // The repositories outside their settings file's folder find it through the register.
+            if !*dry_run {
+                for ws in &workspaces {
+                    if ws.needs_register() {
+                        config::register(&ws.path)?;
+                    }
+                }
+            }
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({
+                        "path": paths::display(&added.path),
+                        "changes": added.changes,
+                        "written": added.written,
+                        "copilot": added.copilot,
+                    })
+                );
+            } else {
+                let what = if *dry_run { "would change" } else { "changed" };
+                if added.changes.is_empty() {
+                    println!("{} has everything already", paths::display(&added.path));
+                } else {
+                    println!("{what} {}:", paths::display(&added.path));
+                    for c in &added.changes {
+                        println!("  {c}");
+                    }
+                }
+                if let Some(c) = &added.copilot {
+                    println!("Copilot CLI with the window's other folders at hand (in a repository): {c}");
                 }
             }
             Ok(0)
@@ -357,7 +460,7 @@ fn run(cli: &Cli) -> Result<u8> {
         Command::Where { path } => {
             let path =
                 path.as_ref().map_or_else(|| dir.clone(), |p| if p.is_absolute() { p.clone() } else { dir.join(p) });
-            let Ok(ws) = Workspace::find(&path) else {
+            let Ok(ws) = (if cli.configs.is_empty() { Workspace::find(&path) } else { workspace(cli, &dir) }) else {
                 if cli.json {
                     println!("{}", json!({ "workspace": null }));
                 } else {
@@ -372,20 +475,23 @@ fn run(cli: &Cli) -> Result<u8> {
                     "{}",
                     json!({
                         "workspace": paths::display(&ws.root),
+                        "config": paths::display(&ws.path),
                         "repo": repo.as_ref().map(|r| r.name.clone()),
                         "repo_path": repo.as_ref().map(|r| paths::display(&r.source)),
                         "mirror": repo.as_ref().map(|r| paths::display(&r.mirror)),
                     })
                 );
             } else {
-                println!("{}", paths::display(&ws.root));
+                println!("{}", paths::display(&ws.path));
             }
             Ok(0)
         }
         Command::Files { all } => {
-            let ws = Workspace::find(&dir)?;
+            let ws = workspace(cli, &dir)?;
             let mut files = Vec::new();
+            let mut roots = Vec::new();
             for at in mixenc::locate::roots(&ws) {
+                roots.push(paths::display(&at.root.source));
                 let index = mixenc::index::Index::load(&at.root.mirror, &at.root.source);
                 for (rel, s) in index.files {
                     let read = s.read_as.unwrap_or(s.judged);
@@ -413,7 +519,7 @@ fn run(cli: &Cli) -> Result<u8> {
                 }
             }
             if cli.json {
-                println!("{}", serde_json::to_string_pretty(&json!({ "files": files }))?);
+                println!("{}", serde_json::to_string_pretty(&json!({ "files": files, "roots": roots }))?);
             } else {
                 for f in &files {
                     let read_as = f["read_as"]
@@ -451,7 +557,7 @@ fn run(cli: &Cli) -> Result<u8> {
             let judged = std::fs::read(&original).ok().map(|b| judge::judge(&b));
             let changed = config::set_override(&place.ws, &original, read_as, judged)?;
             // Mirror the file the new way at once.
-            let ws = Workspace::load(&place.ws.root)?;
+            let ws = Workspace::load_file(&place.ws.path)?;
             if let Some(place) = mixenc::locate::find(&original, Some(&ws)) {
                 place.sync()?;
             }
@@ -611,7 +717,7 @@ fn run_hooks(cli: &Cli, dir: &std::path::Path, command: &HooksCommand) -> Result
         }
         HooksCommand::Install { repo } | HooksCommand::Uninstall { repo } | HooksCommand::Status { repo } => repo,
     };
-    let ws = Workspace::find(dir)?;
+    let ws = workspace(cli, dir)?;
     let repos: Vec<_> =
         ws.repos().into_iter().filter(|r| only.as_deref().is_none_or(|n| r.name.eq_ignore_ascii_case(n))).collect();
     if repos.is_empty() {

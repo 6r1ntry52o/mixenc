@@ -1,8 +1,10 @@
 //! The entry, `mixenc clangd`: stands between an editor or an agent and clangd.
 //!
-//! - At the start (the client's `initialize`): finds the workspace from the client's folders, syncs
-//!   the repositories, and starts clangd on the mirror (`--compile-commands-dir`, `--path-mappings`).
-//!   Without a workspace it passes everything through.
+//! - At the start (the client's `initialize`): takes the settings files given with
+//!   `--mixenc-config <file>` (one per workspace; an editor has one clangd for all its folders), else
+//!   finds the workspace of each of the client's folders; syncs the repositories, and starts clangd
+//!   on the mirrors (`--compile-commands-dir`, `--path-mappings`). Without a workspace it passes
+//!   everything through.
 //! - On the way: before `didOpen` and `didSave`, mirrors that file.
 //! - A client that read a CP932 original as UTF-8 (agents' LSP clients do) sends a text with the
 //!   0x5C trap in it: such a text is replaced with the mirror's, and the columns of that client's
@@ -31,6 +33,8 @@ use crate::{lsp, paths, sync, translate, uri};
 
 /// clangd options the entry sets itself.
 const OWN_OPTIONS: [&str; 2] = ["--compile-commands-dir", "--path-mappings"];
+/// The entry's own option (not clangd's): a settings file to serve. Repeat it for more.
+pub const CONFIG_OPTION: &str = "--mixenc-config";
 /// Requests whose answers are locations; the log records where they lead.
 const LOCATION_METHODS: [&str; 5] = [
     "textDocument/definition",
@@ -48,17 +52,73 @@ pub fn run(args: Vec<String>) -> Result<i32> {
         let status = Command::new(clangd).args(&args).status()?;
         return Ok(status.code().unwrap_or(1));
     }
+    let (configs, args) = split_configs(args);
     let mut from_client = BufReader::new(io::stdin().lock());
     let Some(first) = lsp::read(&mut from_client)? else { return Ok(0) };
     let initialize: Value = serde_json::from_slice(&first).unwrap_or(Value::Null);
 
-    let workspace = client_folders(&initialize).iter().find_map(|dir| Workspace::find(dir).ok());
-    let Some(ws) = workspace else {
-        log("no mixenc.json above the client's folders: passing everything through to clangd");
+    let mut problems = Vec::new();
+    let mut found: Vec<Workspace> = Vec::new();
+    if configs.is_empty() {
+        for dir in client_folders(&initialize) {
+            if let Ok(ws) = Workspace::find(&dir) {
+                found.push(ws);
+            }
+        }
+    } else {
+        for file in &configs {
+            match Workspace::load_file(file) {
+                Ok(ws) => found.push(ws),
+                Err(err) => problems.push(format!("mixenc could not read {}: {err:#}", paths::display(file))),
+            }
+        }
+    }
+    let (workspaces, refused) = together(found);
+    problems.extend(refused);
+    if workspaces.is_empty() {
+        for p in &problems {
+            log(p);
+        }
+        log("no mixenc workspace for the client's folders: passing everything through to clangd");
         return pass_through(&args, &first, from_client);
-    };
-    let session = Session::start(ws, &initialize, &args)?;
+    }
+    let session = Session::start(workspaces, problems, &initialize, &args)?;
     session.serve(first, from_client)
+}
+
+/// The entry's `--mixenc-config <file>` (or `=<file>`) apart from clangd's arguments.
+fn split_configs(args: Vec<String>) -> (Vec<PathBuf>, Vec<String>) {
+    let mut configs = Vec::new();
+    let mut rest = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if a == CONFIG_OPTION {
+            configs.extend(it.next().map(PathBuf::from));
+        } else if let Some(v) = a.strip_prefix(CONFIG_OPTION).and_then(|v| v.strip_prefix('=')) {
+            configs.push(PathBuf::from(v));
+        } else {
+            rest.push(a);
+        }
+    }
+    (configs, rest)
+}
+
+/// The workspaces one clangd can serve together: each once, and none whose mirrors overlap another
+/// one's (except the same repository with the same mirror, which they share). The refused ones come
+/// back as messages.
+fn together(found: Vec<Workspace>) -> (Vec<Workspace>, Vec<String>) {
+    let mut kept: Vec<Workspace> = Vec::new();
+    let mut refused = Vec::new();
+    for ws in found {
+        if kept.iter().any(|k| paths::key(&k.path.to_string_lossy()) == paths::key(&ws.path.to_string_lossy())) {
+            continue;
+        }
+        match kept.iter().find_map(|k| crate::config::overlap(k, &ws)) {
+            Some(why) => refused.push(format!("mixenc left out {}: {why}", paths::display(&ws.path))),
+            None => kept.push(ws),
+        }
+    }
+    (kept, refused)
 }
 
 /// The folders the client opened: `workspaceFolders`, `rootUri`, `rootPath`, then the current one.
@@ -222,8 +282,9 @@ impl State {
 }
 
 struct Session {
-    ws: Workspace,
-    repos: Vec<RepoPaths>,
+    workspaces: Vec<Workspace>,
+    /// The repositories it serves, with the index of their workspace.
+    repos: Vec<(usize, RepoPaths)>,
     /// Every mirrored root, the most specific first.
     roots: Vec<Root>,
     state: Mutex<State>,
@@ -234,9 +295,17 @@ struct Session {
 }
 
 impl Session {
-    fn start(ws: Workspace, initialize: &Value, args: &[String]) -> Result<Arc<Session>> {
+    fn start(
+        workspaces: Vec<Workspace>,
+        problems: Vec<String>,
+        initialize: &Value,
+        args: &[String],
+    ) -> Result<Arc<Session>> {
         STARTED.get_or_init(Instant::now);
-        open_log(&ws);
+        open_log(&workspaces[0]);
+        for p in &problems {
+            detail(p);
+        }
         let client = &initialize["params"]["clientInfo"];
         detail(&format!(
             "client {} {}",
@@ -244,10 +313,17 @@ impl Session {
             client["version"].as_str().unwrap_or("")
         ));
         let folders = client_folders(initialize);
-        let all = ws.repos();
-        let mut repos: Vec<RepoPaths> = all
+        // Each repository once (two workspaces may name the same one: the first serves it).
+        let mut seen = std::collections::HashSet::new();
+        let all: Vec<(usize, RepoPaths)> = workspaces
             .iter()
-            .filter(|r| {
+            .enumerate()
+            .flat_map(|(i, ws)| ws.repos().into_iter().map(move |r| (i, r)))
+            .filter(|(_, r)| seen.insert(paths::key(&r.source.to_string_lossy())))
+            .collect();
+        let mut repos: Vec<(usize, RepoPaths)> = all
+            .iter()
+            .filter(|(_, r)| {
                 folders.iter().any(|f| {
                     let (f, s) = (f.to_string_lossy(), r.source.to_string_lossy());
                     paths::is_under(&f, &s) || paths::is_under(&s, &f)
@@ -259,11 +335,11 @@ impl Session {
             repos = all;
         }
 
-        let mut notices = Vec::new();
+        let mut notices = problems;
         let mut mappings: Vec<String> = Vec::new();
         let mut roots: Vec<Root> = Vec::new();
-        for repo in &repos {
-            match sync::sync_repo(&ws, repo) {
+        for (i, repo) in &repos {
+            match sync::sync_repo(&workspaces[*i], repo) {
                 Ok(result) => {
                     detail(&sync_summary(&result));
                     notices.extend(problems_of(&result));
@@ -293,17 +369,17 @@ impl Session {
 
         let mut clangd_args: Vec<String> =
             args.iter().filter(|a| !OWN_OPTIONS.iter().any(|o| a.starts_with(o))).cloned().collect();
-        if let [repo] = repos.as_slice() {
+        if let [(_, repo)] = repos.as_slice() {
             clangd_args.push(format!("--compile-commands-dir={}", paths::display(&repo.mirror)));
         }
         if !mappings.is_empty() {
             clangd_args.push(format!("--path-mappings={}", mappings.join(",")));
         }
-        let clangd = find_clangd(Some(&ws))?;
+        let clangd = find_clangd(workspaces.iter().find(|w| w.config.clangd.is_some()).or(workspaces.first()))?;
         log(&format!(
-            "workspace {}, repositories [{}], clangd {}",
-            paths::display(&ws.root),
-            repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "),
+            "workspaces [{}], repositories [{}], clangd {}",
+            workspaces.iter().map(|w| paths::display(&w.path)).collect::<Vec<_>>().join(", "),
+            repos.iter().map(|(_, r)| r.name.as_str()).collect::<Vec<_>>().join(", "),
             paths::display(&clangd)
         ));
         detail(&format!("clangd arguments: {clangd_args:?}"));
@@ -316,7 +392,7 @@ impl Session {
         let to_server = child.stdin.take().context("clangd's stdin")?;
         let from_server = child.stdout.take().context("clangd's stdout")?;
         Ok(Arc::new(Session {
-            ws,
+            workspaces,
             repos,
             roots,
             state: Mutex::new(State { notices, ..State::default() }),
@@ -426,12 +502,13 @@ impl Session {
     /// (clangd's answers should never lead there).
     fn describe_uri(&self, u: &str) -> String {
         let Some(path) = uri::to_path(u) else { return u.to_string() };
-        let mark = if paths::is_under(&path.to_string_lossy(), &self.ws.mirror_root().to_string_lossy()) {
+        let s = path.to_string_lossy();
+        let mark = if self.roots.iter().any(|r| paths::is_under(&s, &r.mirror.to_string_lossy())) {
             " (A MIRROR PATH)"
         } else {
             ""
         };
-        format!("{}{mark}", self.ws.display_path(&path))
+        format!("{}{mark}", self.workspace_of(&path).display_path(&path))
     }
 
     /// The locations of an answer for the log: up to five, as path:line (1-based).
@@ -472,7 +549,23 @@ impl Session {
     }
 
     fn read_as(&self) -> impl Fn(&Path) -> Option<crate::config::ReadAs> + Sync + '_ {
-        |abs: &Path| self.ws.override_for(abs).map(|o| o.read_as)
+        |abs: &Path| self.override_for(abs)
+    }
+
+    /// What a person decided for a file, in the workspace that names it.
+    fn override_for(&self, abs: &Path) -> Option<crate::config::ReadAs> {
+        self.workspaces.iter().find_map(|w| w.override_for(abs)).map(|o| o.read_as)
+    }
+
+    /// The workspace of a path (the one of the repository that holds it), else the first.
+    fn workspace_of(&self, path: &Path) -> &Workspace {
+        let s = path.to_string_lossy();
+        self.repos
+            .iter()
+            .find(|(_, r)| {
+                paths::is_under(&s, &r.source.to_string_lossy()) || paths::is_under(&s, &r.mirror.to_string_lossy())
+            })
+            .map_or(&self.workspaces[0], |(i, _)| &self.workspaces[*i])
     }
 
     /// The column map of a document for this client, `None` when its columns need no moving.
@@ -500,7 +593,7 @@ impl Session {
     }
 
     fn encoding_of(&self, path: &Path, bytes: &[u8]) -> Encoding {
-        match self.ws.override_for(path).map(|o| o.read_as) {
+        match self.override_for(path) {
             Some(crate::config::ReadAs::Encoding(e)) => e,
             _ => judge::judge(bytes),
         }
@@ -630,7 +723,7 @@ impl Session {
         if tell {
             self.notify_client(&format!(
                 "mixenc: {} came with a text that is neither the original read as UTF-8 nor its mirror; clangd reads it as sent.",
-                self.ws.display_path(&path)
+                self.workspace_of(&path).display_path(&path)
             ));
         }
         false
@@ -746,7 +839,7 @@ impl Session {
             log("cannot watch the repositories; changes outside the editor reach the mirror at the next start");
             return;
         };
-        for repo in &self.repos {
+        for (_, repo) in &self.repos {
             if let Err(err) = watcher.watch(&repo.source, RecursiveMode::Recursive) {
                 log(&format!("cannot watch {}: {err}", paths::display(&repo.source)));
             }
@@ -772,8 +865,8 @@ impl Session {
             if !relevant {
                 continue;
             }
-            for repo in &self.repos {
-                match sync::sync_repo(&self.ws, repo) {
+            for (i, repo) in &self.repos {
+                match sync::sync_repo(&self.workspaces[*i], repo) {
                     Ok(result) => {
                         detail(&format!("after a change: {}", sync_summary(&result)));
                         let notices = problems_of(&result);

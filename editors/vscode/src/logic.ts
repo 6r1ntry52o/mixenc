@@ -132,18 +132,19 @@ export function globLiteral(p: string): string {
 }
 
 /**
- * `files.readonlyInclude` with the read-only files of the workspace: entries mixenc wrote for
- * files under `root` are replaced, other entries are kept. `undefined` when nothing changes.
+ * `files.readonlyInclude` with the read-only files of a workspace: entries mixenc wrote for files
+ * under its `roots` (what it mirrors) are replaced, other entries are kept. `undefined` when
+ * nothing changes.
  */
 export function readonlyInclude(
   current: Record<string, boolean> | undefined,
-  root: string,
+  roots: string[],
   files: FileInfo[],
 ): Record<string, boolean> | undefined {
-  const prefix = globLiteral(root).toLowerCase().replace(/\/?$/, '/');
+  const prefixes = roots.map((r) => globLiteral(r).toLowerCase().replace(/\/?$/, '/'));
   const next: Record<string, boolean> = {};
   for (const [glob, on] of Object.entries(current ?? {})) {
-    if (!glob.toLowerCase().startsWith(prefix)) {
+    if (!prefixes.some((p) => glob.toLowerCase().startsWith(p))) {
       next[glob] = on;
     }
   }
@@ -155,6 +156,45 @@ export function readonlyInclude(
   const same = (a: Record<string, boolean>, b: Record<string, boolean>) =>
     Object.keys(a).length === Object.keys(b).length && Object.entries(a).every(([k, v]) => b[k] === v);
   return same(next, current ?? {}) ? undefined : next;
+}
+
+/**
+ * The settings files of the window: `mixenc.configs` (relative to the .code-workspace's folder),
+ * else the older `mixenc.workspace` (the folder of a mixenc.json). Each once, by path key.
+ */
+export function configFiles(configs: unknown, legacyFolder: unknown, base: string): string[] {
+  const out: string[] = [];
+  const add = (p: string) => {
+    const abs = isAbsolute(p) ? p : joinPath(base, p);
+    if (!out.some((o) => pathKey(o) === pathKey(abs))) {
+      out.push(abs);
+    }
+  };
+  if (Array.isArray(configs)) {
+    configs.filter((c): c is string => typeof c === 'string' && c.length > 0).forEach(add);
+  }
+  if (!out.length && typeof legacyFolder === 'string' && legacyFolder) {
+    add(joinPath(legacyFolder, 'mixenc.json'));
+  }
+  return out;
+}
+
+/** Whether a Windows path is absolute (a drive and a slash, or a UNC path). */
+function isAbsolute(p: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\') || p.startsWith('//');
+}
+
+/** `base` and a relative path, with `..` and `.` resolved, `\\` between the parts. */
+function joinPath(base: string, rel: string): string {
+  const parts: string[] = [];
+  for (const part of `${base}\\${rel}`.split(/[\\/]+/)) {
+    if (part === '..') {
+      parts.pop();
+    } else if (part && part !== '.') {
+      parts.push(part);
+    }
+  }
+  return (base.startsWith('\\\\') ? '\\\\' : '') + parts.join('\\');
 }
 
 /** A progress line of `mixenc doctor --deep --json` on stderr: `progress 3/10 src/a.cpp`. */

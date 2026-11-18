@@ -51,9 +51,9 @@ pub struct Server {
     tools: Tools,
 }
 
-/// Serves until stdin closes.
-pub fn serve() -> Result<()> {
-    let mut server = Server::default();
+/// Serves until stdin closes. `workspaces`: those the analysis tools know from the start.
+pub fn serve(workspaces: Vec<crate::config::Workspace>) -> Result<()> {
+    let mut server = Server { tools: Tools::with(workspaces) };
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
