@@ -29,7 +29,7 @@ mixenc はリポの**写し**を UTF-8 でリポの外に作ります（行と�
 - **長いパス。** 約 950 文字のパスでも動きます。clangd が索引を保存できない長い名前（235 文字以上）は、doctor が一覧に出します。
 - **何も外に出さない。** テレメトリも通信もありません。doctor の出力にはパスが入るので、作った PC の中に置いておきます。
 
-**状態: 5 段とも作った。** できるのは、判定・写す・写しの DB・doctor（短い版と深い版）・入口（`mixenc clangd`）・解析の道具（MCP で clangd の答えを返す）と解析エージェント・正門（`mixenc edit` と、原本を元の文字コードで書く MCP の道具）・commit の関所（git の pre-commit）・Copilot の関所（VS Code の Copilot と Copilot CLI のフック）・VS Code 拡張とそれが開くワークスペースのファイルです。
+**状態: 6 段とも作った。** できるのは、判定・写す・写しの DB・doctor（短い版と深い版）・入口（`mixenc clangd`）・解析の道具（MCP で clangd の答えを返す）と解析エージェント・正門（`mixenc edit` と、原本を元の文字コードで書く MCP の道具）・commit の関所（git の pre-commit）・Copilot の関所（VS Code の Copilot と Copilot CLI のフック）・VS Code 拡張です。設定ファイルは git で管理して写しを外に置け、mixenc は自分の `.code-workspace` に項目を足します。
 
 ## 要るもの
 
@@ -66,20 +66,22 @@ D:/mirror/.mixenc/             mixenc の状態とログ
 6. Copilot（VS Code と Copilot CLI）には、`mixenc copilot install` でフック・解析エージェント・MCP サーバ・入口を `~/.copilot` に入れます（下の節）。
 7. VS Code には、`mixenc workspace <vault>/dev.code-workspace --config <vault>/cloneA.mixenc.json --config <vault>/cloneB.mixenc.json` で、自分の `.code-workspace` に mixenc の項目を足します（無ければ作ります。`--dry-run` で先に変わる所を見られます）。拡張のコマンド「mixenc: この窓にリポを足す」なら、1・2・7 をダイアログで済ませます。
 
+どのコマンドも、動かしたフォルダ（リポ・写し・設定ファイルのフォルダ）から設定ファイルを見つけます。`--config <file>` で名指しもできます。
+
 窓の用意をエージェントに頼む時も、エージェントはこのコマンドを呼びます。`.code-workspace` と設定ファイルを手で直しません（手順は `mixenc workspace --help`）。
 
 ## 入口（`mixenc clangd`）
 
 `mixenc clangd [clangd の引数]` は、写しで clangd を起こし、clangd とクライアントの間に立ちます。
 
-- `--mixenc-config <ファイル>` で渡された設定ファイル（繰り返せる。エディタは窓の全部のフォルダに clangd を 1 つしか起こさない）を、無ければクライアントが開いたフォルダごとの設定ファイル（そこか上にあるもの、か登録したもの）を扱います。写して、clangd を `--compile-commands-dir`（リポが 1 つの時）と `--path-mappings` 付きで起こします。写しが重なる設定ファイルは外し、そのことを知らせます。ワークスペースが無ければ、全部をそのまま clangd に渡します。
+- `--mixenc-config <ファイル>` で渡された設定ファイル（繰り返せる。エディタは窓の全部のフォルダに clangd を 1 つしか起こさない）を、無ければクライアントが開いたフォルダごとの設定ファイル（そこか上にあるもの、か登録したもの）を扱います。写して、clangd を `--compile-commands-dir`（リポが 1 つの時）と `--path-mappings` 付きで起こします。写しが重なる設定ファイルは外し、そのことを知らせます。設定ファイルが無ければ、全部をそのまま clangd に渡します。
 - ファイルを開く・保存する前に、そのファイルを写します。リポと DB を見張り、変更が落ち着いたら写します（checkout や別の道具での変更）。
 - CP932 のファイルを UTF-8 として読むクライアント（エージェントの LSP はそう読む）は、0x5C の罠ごと本文を送ってきます。その本文は写しの本文に差し替えます。それ以降、そのクライアントとの間では、列をクライアントの読み方と写しの読み方の間で読み替えます（行は同じ）。
 - 写せないファイルは `window/showMessage` で知らせ、解析は続けます。入口が自分であるメッセージに失敗した時は、そのメッセージをそのまま渡し、そのことを知らせます。
 
 起こす clangd は、次の順に探します。
 1. `MIXENC_CLANGD`
-2. `mixenc.json` の `"clangd"`
+2. 設定ファイルの `"clangd"`
 3. `PATH` の `clangd.exe`
 4. vscode-clangd が入れたもの
 5. Neovim の Mason が入れたもの
@@ -134,7 +136,7 @@ CP932 のファイルを Unicode を通して読み書きするエディタや�
 
 ## commit の関所（`mixenc hooks`）
 
-`mixenc hooks install` で、ワークスペースの各リポに git の pre-commit を入れます。ステージしたファイルごとに、HEAD と比べて次を確かめます。
+`mixenc hooks install` で、設定ファイルの各リポに git の pre-commit を入れます。ステージしたファイルごとに、HEAD と比べて次を確かめます。
 
 - 文字コードが変わっていない（`cp932` が `utf8` になっていない）。非 ASCII がまだ無かったファイルは、そこで MSVC が正しく読む形だけ通す（上と同じ）
 - 文字が変わっていない行は、改行まで含めてバイトが同じ（`Ⅰ FA 4A -> 87 54` を止める）
@@ -150,7 +152,7 @@ CP932 のファイルを Unicode を通して読み書きするエディタや�
 
 `.code-workspace` は自分のものです。`mixenc workspace <ファイル> --config <設定ファイル>...` は、そこに mixenc の項目を足し、ほか（ほかのフォルダ・設定・コメント）は残します。同じものをもう一度足しても何も変わりません。`--dry-run` は変わる所を出すだけで書きません。mixenc の項目は次のとおりです。
 
-- リポ（とそのドキュメント `wiki`）のフォルダ（無ければ足す。写しは入れない）
+- リポのフォルダ（無ければ足す。写しは入れない。ドキュメント・vault などほかのフォルダは自分で足す）
 - `mixenc.configs`：この窓が使う設定ファイル（`.code-workspace` からの相対）
 - vscode-clangd を入口から起こす（`clangd.path`。`clangd.arguments` は自分の引数を残し、設定ファイルごとに `--mixenc-config` を足す）。Microsoft の C/C++ の IntelliSense は止め、答えるのを 1 つにする
 - 混在・壊れのファイルは読み取り専用（`files.readonlyInclude`。mixenc の根の下の項目だけを直す）。エディタはファイルを 1 つの文字コードで読むので、保存するとほかの行が壊れる
@@ -171,7 +173,7 @@ CP932 のファイルを Unicode を通して読み書きするエディタや�
 
 ## doctor の深い版（`mixenc doctor --deep`）
 
-手で動かす、時間のかかる確かめです。写しの DB の全部の翻訳単位を `clangd --check` に通します（既定でプロセッサの半分ずつ・`--jobs`）。初めての時に基準（`mirror/<リポ>/.mixenc/deep-baseline.json`）を取り、次からは次を出します。
+手で動かす、時間のかかる確かめです。写しの DB の全部の翻訳単位を `clangd --check` に通します（既定でプロセッサの半分ずつ・`--jobs`）。初めての時に基準（リポの写しの `.mixenc/deep-baseline.json`）を取り、次からは次を出します。
 
 - 基準よりエラーが増えた翻訳単位。MSVC ではビルドできるので、増えたエラーは読み違えたファイルか、まだ無い生成ファイル（意図した変更なら `--update-baseline`）
 - 見つからない include（まだビルドしていない `.tlh`、DB に無いフォルダ）
@@ -191,7 +193,7 @@ VS Code の Copilot と Copilot CLI は、同じフック（`~/.copilot/hooks/`�
 | 書く（`edit`・`create`・`apply_patch`） | 止めて、mixenc の `edit` の使い方を返す | MSVC が読み違える所への非 ASCII は止める。ほかは通す | 止める |
 | 書いた後・シェルの後 | — | 写しを合わせる | — |
 
-ワークスペースでの会話は、読み方と書き方の案内と doctor の短い版から始まります。ワークスペースの外ではフックは何もしません。フックが時間切れになると道具は通ります。最後の守りは commit の関所です。
+設定ファイルがあるリポでの会話は、読み方と書き方の案内と doctor の短い版から始まります。それ以外ではフックは何もしません。フックが時間切れになると道具は通ります。最後の守りは commit の関所です。
 
 `mixenc copilot install`（`COPILOT_HOME`、無ければ `~/.copilot` に入れる。別のフォルダは `--home`）で入るもの:
 
@@ -208,7 +210,7 @@ VS Code の Copilot と Copilot CLI は、同じフック（`~/.copilot/hooks/`�
 
 | コマンド | すること |
 |---|---|
-| `mixenc init --repo <dir>... [--mirror <dir>] [--wiki <dir>]` | 設定ファイルを書く（今のフォルダの `mixenc.json` か `--config` のファイル）。リポがそのフォルダの外なら登録する |
+| `mixenc init --repo <dir>... [--mirror <dir>]` | 設定ファイルを書く（今のフォルダの `mixenc.json` か `--config` のファイル）。リポがそのフォルダの外なら登録する |
 | `mixenc register [<file>...]` | 設定ファイルを登録する（リポから見つかるように） |
 | `mixenc sync [--repo <名前>] [--rebuild]` | リポとリポの外の include を写し、写しの DB を書く（`--rebuild` は全部を作り直す） |
 | `mixenc doctor [--limit N]` | 全部を確かめる（何も変えない） |
@@ -239,11 +241,11 @@ VS Code の Copilot と Copilot CLI は、同じフック（`~/.copilot/hooks/`�
 設定ファイルは `mixenc.json` か `<名前>.mixenc.json` です。中のパスは、そのフォルダからの相対か絶対です。形は [README.md](README.md#mixencjson) を見てください。
 
 - `mirror`：写しの置き場。リポの写し（`<mirror>/<name>`）・リポの外の include の写し（`_ext`）・mixenc の状態（`.mixenc`）を置きます。既定はファイルの隣の `mirror` ですが、そこが git の作業ツリーの中なら止めます。いくつもの設定ファイルが同じ置き場を使えます。
-- `repos[].path` はリポです。次の 4 つは省けます。
+- `repos[].path` はリポです。次の 3 つは省けます。
   - `name`：名前（既定はフォルダの名前）
   - `mirror`：そのリポの写し（既定は `<mirror>/<name>`）
-  - `wiki`：ドキュメント
   - `db`：`compile_commands.json` のファイルかそのフォルダ（既定は lazymsbuild のもの、無ければリポの根）
+- ドキュメント（Wiki・vault）は `.code-workspace` のフォルダで、設定ファイルには書きません（前のファイルの `wiki` は読みません）。
 - `external` には、DB が指す場所のほかに写す、リポの外の include フォルダを書きます。
 - `overrides` は上書き表です。判定が決められなかった（または間違えた）ファイルについて、人が決めたことを書きます。読む文字コードか `skip` を指定し、`judged` にその時の判定を残します。判定が変わると doctor が一覧に出します。
 

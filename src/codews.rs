@@ -1,7 +1,8 @@
 //! The `.code-workspace` VS Code opens (`mixenc workspace`). The file is the person's: mixenc adds
 //! its own items to it and leaves the rest (other folders, settings, comments) as it is. Its items:
 //!
-//! - the repositories (and their documents) as folders, when they are not there yet;
+//! - the repositories as folders, when they are not there yet (other folders, such as documents,
+//!   are the person's to add);
 //! - `mixenc.configs`, the settings files this window uses (one per repository, or more);
 //! - clangd through the entry (`clangd.path`, and `clangd.arguments` with `--mixenc-config` for
 //!   each settings file: an editor has one clangd for all its folders);
@@ -94,7 +95,7 @@ pub fn add(file: &Path, workspaces: &[Workspace], exe: &Path, dry_run: bool) -> 
     };
     let resolve = |s: &str| paths::key(&paths::absolute(&base, s));
 
-    // Folders: the repositories and their documents, when not there.
+    // Folders: the repositories, when not there.
     let folders = top.array_value_or_set("folders");
     let mut have: Vec<String> = folders
         .elements()
@@ -104,16 +105,11 @@ pub fn add(file: &Path, workspaces: &[Workspace], exe: &Path, dry_run: bool) -> 
         .collect();
     for ws in workspaces {
         for repo in ws.repos() {
-            let wiki = repo.wiki.clone();
-            for (name, p) in std::iter::once((repo.name.clone(), repo.source.clone())).chain(
-                wiki.map(|w| (w.file_name().map_or_else(|| "wiki".into(), |n| n.to_string_lossy().into_owned()), w)),
-            ) {
-                let key = paths::key(&p.to_string_lossy());
-                if !have.contains(&key) {
-                    folders.append(input(&json!({ "name": name, "path": shown(&p) })));
-                    changes.push(format!("folders: added {}", paths::display(&p)));
-                    have.push(key);
-                }
+            let key = paths::key(&repo.source.to_string_lossy());
+            if !have.contains(&key) {
+                folders.append(input(&json!({ "name": repo.name, "path": shown(&repo.source) })));
+                changes.push(format!("folders: added {}", paths::display(&repo.source)));
+                have.push(key);
             }
         }
     }

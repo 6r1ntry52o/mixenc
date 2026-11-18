@@ -74,6 +74,11 @@ others to read (`mixenc.json`, `repo.json`, the doctor's `--json` report) carry 
   an editor has one clangd for all its folders. `mixenc mcp --config ...` knows them from the start.
 - Stage 6: the extension runs a session per settings file of the window, with one status bar item;
   "Add a repository to this window" replaces "Create a workspace".
+
+### Removed
+
+- `wiki` in the settings file and `mixenc init --wiki`: documents are folders of the person's
+  `.code-workspace`, which mixenc no longer writes whole. An older file's `wiki` is ignored.
 - Releases: a zip per architecture with `mixenc.exe` and the third-party licenses, the extension's
   `.vsix`, and `SHA256SUMS`.
 

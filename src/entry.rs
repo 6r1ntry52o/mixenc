@@ -134,7 +134,7 @@ fn client_folders(initialize: &Value) -> Vec<PathBuf> {
     dirs
 }
 
-/// The clangd to start: `MIXENC_CLANGD`, `clangd` in mixenc.json, `clangd.exe` on PATH (not this
+/// The clangd to start: `MIXENC_CLANGD`, `clangd` in the settings file, `clangd.exe` on PATH (not this
 /// program), the one vscode-clangd installed, or the one Neovim's Mason installed.
 pub fn find_clangd(ws: Option<&Workspace>) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("MIXENC_CLANGD") {
@@ -181,7 +181,7 @@ pub fn find_clangd(ws: Option<&Workspace>) -> Result<PathBuf> {
             return Ok(p);
         }
     }
-    bail!("clangd not found: set MIXENC_CLANGD, \"clangd\" in mixenc.json, or put clangd.exe on PATH")
+    bail!("clangd not found: set MIXENC_CLANGD, \"clangd\" in the settings file, or put clangd.exe on PATH")
 }
 
 static LOG_FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();

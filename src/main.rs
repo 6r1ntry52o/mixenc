@@ -44,16 +44,13 @@ enum Command {
         /// Where the mirrors go (default: `mirror` beside the settings file; needed when that is in git)
         #[arg(long, value_name = "DIR")]
         mirror: Option<String>,
-        /// The first repository's documents
-        #[arg(long, value_name = "DIR")]
-        wiki: Option<String>,
     },
     /// Register settings files (default: the one found from the folder), so that their
     /// repositories find them (Copilot's hooks, the commit gate, the analysis tools)
     Register { files: Vec<PathBuf> },
     /// Mirror the repositories and the include folders outside them, and write the mirror databases
     Sync {
-        /// Only this repository (its name in mixenc.json)
+        /// Only this repository (its name in the settings file)
         #[arg(long)]
         repo: Option<String>,
         /// Read every file again and write every mirror anew (not only the files that changed)
@@ -78,8 +75,8 @@ enum Command {
     },
     /// Add mixenc's items to a VS Code .code-workspace (made when it is not there): the
     /// repositories as folders, the settings files (--config, repeat for more), clangd through the
-    /// entry, mixed and broken files read-only. Everything else in the file (other folders,
-    /// settings, comments) stays. Adding the same again changes nothing.
+    /// entry, mixed and broken files read-only. Everything else in the file (other folders such as
+    /// documents, settings, comments) stays. Adding the same again changes nothing.
     ///
     /// For an agent asked to set up a window: do not edit the .code-workspace or the settings files
     /// by hand. For each C/C++ repository, ask for (or agree on) the mirror folder (outside git)
@@ -96,7 +93,7 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Print the workspace that holds a folder or file (exit code 1 when none does)
+    /// Print the settings file that holds a folder or file (exit code 1 when none does)
     Where {
         /// The folder or file (default: the current folder)
         path: Option<PathBuf>,
@@ -106,7 +103,7 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
-    /// Decide how a file is read (the override table in mixenc.json): an encoding, or skip
+    /// Decide how a file is read (the override table in the settings file): an encoding, or skip
     Override {
         file: PathBuf,
         /// cp932, utf8, euc-jp, utf16le, ... or skip
@@ -140,7 +137,7 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// The front gate: replace text in a file of the workspace (or write a new one) in the file's
+    /// The front gate: replace text in a file of a repository (or write a new one) in the file's
     /// own encoding, keeping every other line's bytes (what the MCP tools edit and create do)
     Edit {
         /// The file: the original, or its mirror
@@ -167,7 +164,7 @@ enum Command {
     /// Serve the analysis tools (clangd's answers, files read right) and the front gate's tools
     /// (edit, create) as an MCP server on stdin and stdout
     Mcp,
-    /// The commit gate: a git pre-commit in each repository of the workspace
+    /// The commit gate: a git pre-commit in each repository of the settings file
     Hooks {
         #[command(subcommand)]
         command: HooksCommand,
@@ -218,7 +215,7 @@ enum CopilotCommand {
 enum HooksCommand {
     /// Install the pre-commit (a pre-commit already there is kept and runs first)
     Install {
-        /// Only this repository (its name in mixenc.json)
+        /// Only this repository (its name in the settings file)
         #[arg(long)]
         repo: Option<String>,
     },
@@ -280,13 +277,13 @@ fn run(cli: &Cli) -> Result<u8> {
         None => std::env::current_dir()?,
     };
     match &cli.command {
-        Command::Init { repos, mirror, wiki } => {
+        Command::Init { repos, mirror } => {
             let file = match cli.configs.as_slice() {
                 [] => None,
                 [one] => Some(one.as_path()),
                 _ => anyhow::bail!("init writes one settings file (one --config)"),
             };
-            let init = config::Init { dir: &dir, file, repos, wiki: wiki.as_deref(), mirror: mirror.as_deref() };
+            let init = config::Init { dir: &dir, file, repos, mirror: mirror.as_deref() };
             let file = config::init(&init)?;
             if cli.json {
                 println!("{}", json!({ "config": paths::display(&file) }));
@@ -539,8 +536,9 @@ fn run(cli: &Cli) -> Result<u8> {
         }
         Command::Override { file, read_as, remove } => {
             let path = if file.is_absolute() { file.clone() } else { dir.join(file) };
-            let place = mixenc::locate::find(&path, None)
-                .ok_or_else(|| anyhow::anyhow!("{} is not in a folder a workspace mirrors", paths::display(&path)))?;
+            let place = mixenc::locate::find(&path, None).ok_or_else(|| {
+                anyhow::anyhow!("{} is not in a folder a settings file mirrors", paths::display(&path))
+            })?;
             let original = place.original();
             let read_as = match (remove, read_as.as_deref()) {
                 (true, _) => None,

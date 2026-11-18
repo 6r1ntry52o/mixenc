@@ -60,7 +60,7 @@ fn format_version() -> u32 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Repo {
-    /// The repository's folder, relative to the workspace or absolute.
+    /// The repository's folder, relative to the settings file's folder or absolute.
     pub path: String,
     /// Its name (default: the repository folder's name), also the name of its mirror folder under
     /// `mirror`.
@@ -69,9 +69,6 @@ pub struct Repo {
     /// Its mirror (default: `<mirror>/<name>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirror: Option<String>,
-    /// Its documents, opened beside it in the editor.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wiki: Option<String>,
     /// Its `compile_commands.json` (the file or its folder). Default: where lazymsbuild publishes
     /// it, else the repository's root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,7 +132,6 @@ pub struct RepoPaths {
     pub name: String,
     pub source: PathBuf,
     pub mirror: PathBuf,
-    pub wiki: Option<PathBuf>,
     pub db: Option<PathBuf>,
 }
 
@@ -355,7 +351,6 @@ impl Workspace {
                     },
                     name,
                     source,
-                    wiki: r.wiki.as_deref().map(|w| self.resolve(w)),
                     db: r.db.as_deref().map(|d| self.resolve(d)),
                 }
             })
@@ -388,7 +383,6 @@ pub struct Init<'a> {
     /// The settings file to write (default: `mixenc.json` in `dir`).
     pub file: Option<&'a Path>,
     pub repos: &'a [String],
-    pub wiki: Option<&'a str>,
     /// Where the mirrors go (default: `mirror` beside the file).
     pub mirror: Option<&'a str>,
 }
@@ -416,14 +410,7 @@ pub fn init(init: &Init) -> Result<PathBuf> {
         repos: init
             .repos
             .iter()
-            .enumerate()
-            .map(|(i, path)| Repo {
-                path: from_dir(path),
-                name: None,
-                mirror: None,
-                wiki: if i == 0 { init.wiki.map(from_dir) } else { None },
-                db: None,
-            })
+            .map(|path| Repo { path: from_dir(path), name: None, mirror: None, db: None })
             .collect(),
         external: Vec::new(),
         overrides: BTreeMap::new(),
@@ -654,6 +641,8 @@ mod tests {
         assert_eq!(repos[1].mirror, PathBuf::from(r"E:\b"));
         assert_eq!(w.external_root(), PathBuf::from(r"D:\m\_ext"));
         assert!(w.holds(r"D:\m\a\x.cpp") && w.holds(r"C:\src\b\y.h") && !w.holds(r"C:\src\c"));
+        // An older file's `wiki` (documents are the .code-workspace's folders now) is ignored.
+        assert!(ws(r#"{"repos": [{"path": "C:/src/a", "wiki": "C:/docs"}]}"#).is_ok());
         // A mirror inside another, or over mixenc's own folders, is refused.
         assert!(
             ws(r#"{"mirror": "D:/m", "repos": [{"path": "C:/a"}, {"path": "C:/b", "mirror": "D:/m/a/b"}]}"#).is_err()

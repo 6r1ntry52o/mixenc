@@ -949,7 +949,7 @@ fn problem_text(problem: &crate::index::Problem) -> String {
     use crate::index::Problem;
     match problem {
         Problem::Undecided => "its encoding waits for a person's decision".into(),
-        Problem::Skipped => "mixenc.json skips it".into(),
+        Problem::Skipped => "the settings file skips it".into(),
         Problem::Violation(d) => format!("its text broke an invariant: {d}"),
         Problem::Unreadable(d) => format!("unreadable: {d}"),
         Problem::WriteFailed(d) => format!("the mirror could not be written: {d}"),

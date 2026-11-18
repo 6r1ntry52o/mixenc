@@ -503,7 +503,7 @@ export class Session implements vscode.Disposable {
       </head><body><h1>${html(report.workspace)}</h1>
       <p>${html(t('{0} broken, {1} notices, {2} ok', report.summary.broken, report.summary.notice, report.summary.ok))}</p>
       ${items}
-      ${choices.length ? `<h2>${html(t('Files whose reading you choose'))}</h2><p>${html(t('Each reading of the lines with non-ASCII text. The choice goes into mixenc.json (overrides).'))}</p>${choices.join('')}` : ''}
+      ${choices.length ? `<h2>${html(t('Files whose reading you choose'))}</h2><p>${html(t('Each reading of the lines with non-ASCII text. The choice goes into the settings file (overrides).'))}</p>${choices.join('')}` : ''}
       <script nonce="${nonce}">const vscode = acquireVsCodeApi();
       document.addEventListener('click', (e) => { const a = e.target.closest('[data-open]'); if (a) { e.preventDefault(); vscode.postMessage({ type: 'open', path: a.dataset.open }); }
         const b = e.target.closest('button[data-read]'); if (b) { vscode.postMessage({ type: 'override', path: b.dataset.path, read: b.dataset.read }); } });</script>

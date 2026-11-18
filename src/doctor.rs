@@ -354,7 +354,7 @@ fn check_root(d: &mut Doctor, root: &Root, is_repo: bool) -> usize {
                 "{} files of {what} need a person to decide their encoding; they are not mirrored (invariant 5)",
                 undecided.len()
             ),
-            Some("add them to \"overrides\" in mixenc.json with the encoding to read them as (or \"skip\")"),
+            Some("add them to \"overrides\" in the settings file with the encoding to read them as (or \"skip\")"),
             undecided,
         );
     }
@@ -424,7 +424,7 @@ fn check_db(d: &mut Doctor, repo: &RepoPaths, state: &RepoState, roots: &[Root])
             Severity::Broken,
             "db",
             "no compile_commands.json: clangd guesses the flags of every file".into(),
-            Some("lazymsbuild sync (or \"db\" in mixenc.json), then mixenc sync"),
+            Some("lazymsbuild sync (or \"db\" in the settings file), then mixenc sync"),
             Vec::new(),
         );
         return;
@@ -535,7 +535,7 @@ fn check_toolchain(d: &mut Doctor, state: &RepoState) {
             Severity::Broken,
             "toolchain",
             format!("{} toolchain headers have lines clangd splices (invariant 9)", traps.len()),
-            Some("add their folder to \"external\" in mixenc.json so that it is mirrored"),
+            Some("add their folder to \"external\" in the settings file so that it is mirrored"),
             traps.iter().map(|(f, s)| format!("{f} ({}, {} lines)", s.judged, s.traps)).collect(),
         );
     }
@@ -544,7 +544,7 @@ fn check_toolchain(d: &mut Doctor, state: &RepoState) {
             Severity::Notice,
             "toolchain",
             format!("{} toolchain headers are not UTF-8 (clangd may misread their text)", others.len()),
-            Some("add their folder to \"external\" in mixenc.json to mirror it"),
+            Some("add their folder to \"external\" in the settings file to mirror it"),
             others.iter().map(|(f, s)| format!("{f} ({})", s.judged)).collect(),
         );
     }
@@ -585,7 +585,7 @@ fn check_overrides(d: &mut Doctor) {
             Severity::Notice,
             "overrides",
             format!("{} overrides are out of date", stale.len()),
-            Some("check them in mixenc.json"),
+            Some("check them in the settings file"),
             stale,
         );
     }

@@ -56,10 +56,12 @@ pub fn plan_replace(
     let read = match mirror::wanted_read_as(judged, read_as) {
         Some(e) => e,
         None if read_as == Some(ReadAs::Skip) => {
-            bail!("mixenc.json leaves this file out (\"skip\"); it is not edited here")
+            bail!("the settings file leaves this file out (\"skip\"); it is not edited here")
         }
         None if judged == Encoding::Binary => bail!("the file is binary (NUL bytes that are not UTF-16)"),
-        None => bail!("the file reads both as CP932 and as EUC-JP; decide which in mixenc.json (overrides) first"),
+        None => {
+            bail!("the file reads both as CP932 and as EUC-JP; decide which in the settings file (overrides) first")
+        }
     };
     let doc = doc::parse(bytes, read).context("the file cannot be read as lines")?;
     let text = doc.normalized();
@@ -107,7 +109,7 @@ pub fn plan_replace(
     let built = build(&doc, &wanted, target)?;
     if read == Encoding::AmbiguousUtf8Cp932 && built.written.iter().any(|&j| !wanted[j].0.is_ascii()) {
         bail!(
-            "the file reads both as UTF-8 and as CP932; decide which in mixenc.json (overrides) before writing non-ASCII text into it"
+            "the file reads both as UTF-8 and as CP932; decide which in the settings file (overrides) before writing non-ASCII text into it"
         );
     }
     let result = Doc { bom, lines: built.lines }.to_bytes();
@@ -271,7 +273,7 @@ fn verify(
 
 fn undecided_note(bytes: &[u8], read_as: Option<ReadAs>) -> Option<String> {
     (read_as.is_none() && judge::judge(bytes) == Encoding::AmbiguousCp932EucJp).then(|| {
-        "the file now reads both as CP932 and as EUC-JP, so it is not mirrored until mixenc.json says which (overrides: \"as\": \"cp932\")".to_string()
+        "the file now reads both as CP932 and as EUC-JP, so it is not mirrored until the settings file says which (overrides: \"as\": \"cp932\")".to_string()
     })
 }
 

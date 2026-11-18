@@ -329,7 +329,7 @@ fn check_write(e: &Event, w: &WriteTarget) -> Option<String> {
         Some(Encoding::Utf8 | Encoding::Utf8Bom) => None,
         Some(Encoding::AmbiguousUtf8Cp932) if w.text.is_ascii() => None,
         Some(Encoding::AmbiguousUtf8Cp932) => Some(format!(
-            "mixenc: {shown} reads both as UTF-8 and as CP932, and which it is has not been decided (mixenc.json, overrides). Write only ASCII into it until then."
+            "mixenc: {shown} reads both as UTF-8 and as CP932, and which it is has not been decided (the settings file, overrides). Write only ASCII into it until then."
         )),
         None | Some(Encoding::Ascii) if w.text.is_ascii() => None,
         None | Some(Encoding::Ascii) => {

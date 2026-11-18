@@ -91,7 +91,7 @@ pub fn check(old: Option<&[u8]>, new: &[u8], read_as: Option<ReadAs>, pick: &mut
     }
 
     let possible = forced.map_or_else(|| readings(o), |e| vec![e]);
-    let was = forced.map_or_else(|| o.name().to_string(), |e| format!("{e} (as mixenc.json says)"));
+    let was = forced.map_or_else(|| o.name().to_string(), |e| format!("{e} (as the settings file says)"));
     let mixed = possible.iter().any(|e| matches!(e, Encoding::Mixed | Encoding::Broken));
     let accepted = if mixed {
         matches!(
@@ -367,6 +367,6 @@ mod tests {
         let euc = encoding_rs::EUC_JP.encode("// アイウ\n").0.into_owned();
         let forced =
             check(Some(&euc), "// アイウ\n".as_bytes(), Some(ReadAs::Encoding(Encoding::Cp932)), &mut Pick::fallback);
-        assert_eq!(forced.findings[0].message, "the encoding changed: cp932 (as mixenc.json says) -> utf8");
+        assert_eq!(forced.findings[0].message, "the encoding changed: cp932 (as the settings file says) -> utf8");
     }
 }

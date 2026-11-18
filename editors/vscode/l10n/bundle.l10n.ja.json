@@ -7,7 +7,6 @@
   "What to do: {0}": "どうすれば: {0}",
   "{0} broken, {1} notices, {2} ok": "崩れ {0}・注意 {1}・済み {2}",
   "Files whose reading you choose": "読み方を選ぶファイル",
-  "Each reading of the lines with non-ASCII text. The choice goes into mixenc.json (overrides).": "非 ASCII の行を、それぞれの読み方で並べる。選んだ読み方は mixenc.json（上書き表）に書く。",
   "UTF-8 and CP932 lines are mixed in this file. It is read-only here: saving it in one encoding would break the other lines. mixenc reads each line right for clangd and agents.": "このファイルは UTF-8 の行と CP932 の行が混ざっている。1 つの文字コードで保存するとほかの行が壊れるので、ここでは読み取り専用。clangd とエージェントには、mixenc が行ごとに正しく読んで見せる。",
   "Some bytes of this file read in no encoding (shown as replacement characters). It is read-only here, so that saving does not lose them.": "このファイルには、どの文字コードでも読めないバイトがある（置換文字で出る）。保存で失わないよう、ここでは読み取り専用。",
   "This file reads both as UTF-8 and as CP932; mixenc reads it as UTF-8. If that is wrong, choose in \"mixenc: Diagnose\".": "このファイルは UTF-8 としても CP932 としても読める。mixenc は UTF-8 として読む。違う時は「mixenc: 診断」で選ぶ。",
@@ -37,5 +36,6 @@
   "The settings file": "設定ファイル",
   "The .code-workspace to open (a new one)": "開く .code-workspace（新しく作る）",
   "Write": "書く",
-  "mixenc adds these to {0}": "mixenc が {0} に足すもの"
+  "mixenc adds these to {0}": "mixenc が {0} に足すもの",
+  "Each reading of the lines with non-ASCII text. The choice goes into the settings file (overrides).": "非 ASCII の行を、それぞれの読み方で並べる。選んだ読み方は 設定ファイル（上書き表）に書く。"
 }
