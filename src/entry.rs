@@ -75,7 +75,7 @@ fn client_folders(initialize: &Value) -> Vec<PathBuf> {
 }
 
 /// The clangd to start: `MIXENC_CLANGD`, `clangd` in mixenc.json, `clangd.exe` on PATH (not this
-/// program), or the one vscode-clangd installed.
+/// program), the one vscode-clangd installed, or the one Neovim's Mason installed.
 pub fn find_clangd(ws: Option<&Workspace>) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("MIXENC_CLANGD") {
         return Ok(PathBuf::from(p));
@@ -98,6 +98,21 @@ pub fn find_clangd(ws: Option<&Workspace>) -> Result<PathBuf> {
             .flatten()
             .flatten()
             .flat_map(|version| std::fs::read_dir(version.path()).into_iter().flatten().flatten())
+            .map(|d| d.path().join(r"bin\clangd.exe"))
+            .filter(|p| p.is_file())
+            .collect();
+        found.sort();
+        if let Some(p) = found.pop() {
+            return Ok(p);
+        }
+    }
+    // Neovim's Mason (its bin folder on PATH holds clangd.cmd, a script, not the exe).
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let mason = PathBuf::from(local).join(r"nvim-data\mason\packages\clangd");
+        let mut found: Vec<PathBuf> = std::fs::read_dir(&mason)
+            .into_iter()
+            .flatten()
+            .flatten()
             .map(|d| d.path().join(r"bin\clangd.exe"))
             .filter(|p| p.is_file())
             .collect();

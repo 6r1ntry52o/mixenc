@@ -73,6 +73,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Print the workspace that holds a folder or file (exit code 1 when none does)
+    Where {
+        /// The folder or file (default: the current folder)
+        path: Option<PathBuf>,
+    },
     /// List the files that are not plain UTF-8 or ASCII, with their judgement and state (--all: every file)
     Files {
         #[arg(long)]
@@ -346,6 +351,34 @@ fn run(cli: &Cli) -> Result<u8> {
                 if let Some(c) = copilot {
                     println!("Copilot CLI with the documents at hand (in a repository): {c}");
                 }
+            }
+            Ok(0)
+        }
+        Command::Where { path } => {
+            let path =
+                path.as_ref().map_or_else(|| dir.clone(), |p| if p.is_absolute() { p.clone() } else { dir.join(p) });
+            let Ok(ws) = Workspace::find(&path) else {
+                if cli.json {
+                    println!("{}", json!({ "workspace": null }));
+                } else {
+                    println!("no mixenc workspace holds {}", paths::display(&path));
+                }
+                return Ok(1);
+            };
+            let key = paths::canonical(&std::path::absolute(&path)?).to_string_lossy().into_owned();
+            let repo = ws.repos().into_iter().find(|r| paths::is_under(&key, &r.source.to_string_lossy()));
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({
+                        "workspace": paths::display(&ws.root),
+                        "repo": repo.as_ref().map(|r| r.name.clone()),
+                        "repo_path": repo.as_ref().map(|r| paths::display(&r.source)),
+                        "mirror": repo.as_ref().map(|r| paths::display(&r.mirror)),
+                    })
+                );
+            } else {
+                println!("{}", paths::display(&ws.root));
             }
             Ok(0)
         }

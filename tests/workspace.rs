@@ -150,3 +150,25 @@ fn the_deep_doctor_holds_clangd_errors_against_its_baseline() {
     let third = deep(&[]);
     assert!(messages(&third, "broken").is_empty(), "{third}");
 }
+
+#[test]
+fn a_workspace_kept_elsewhere_is_found_from_its_repository() {
+    let s = Sample::new();
+    let base = s.ws.parent().unwrap().to_path_buf();
+    // A repository with no mixenc.json above it, and its workspace in a folder of its own.
+    let repo = base.join("plain").join("r2");
+    common::write(&repo.join("a.cpp"), &common::sjis("// 表\r\nint a;\r\n"));
+    let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(&repo).status().unwrap();
+    assert!(git(&["init", "-q"]).success() && git(&["add", "-A"]).success());
+    let home = base.join("home-ws");
+    fs::create_dir_all(&home).unwrap();
+    ok(s.mixenc(&home, &["init", "--repo", &repo.display().to_string()], None));
+    let register = fs::read_to_string(base.join("mixenc-home").join("workspaces.json")).unwrap();
+    assert!(register.contains("home-ws"), "{register}");
+
+    // From inside the repository, mixenc finds that workspace.
+    ok(s.mixenc(&repo, &["sync"], None));
+    assert_eq!(fs::read_to_string(home.join("mirror").join("r2").join("a.cpp")).unwrap(), "// 表\r\nint a;\r\n");
+    let files = json_of(s.mixenc(&repo, &["files", "--json"], None));
+    assert_eq!(files["files"][0]["judged"], "cp932");
+}

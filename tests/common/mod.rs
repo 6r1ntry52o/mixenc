@@ -84,6 +84,7 @@ impl Sample {
             .args(args)
             .current_dir(dir)
             .env("COPILOT_HOME", &self.copilot_home)
+            .env("MIXENC_HOME", self.copilot_home.with_file_name("mixenc-home"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

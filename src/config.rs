@@ -122,6 +122,8 @@ pub struct RepoPaths {
 
 impl Workspace {
     /// The workspace holding `start` (the nearest folder upward with a `mixenc.json`).
+    /// Else, a registered workspace (one `mixenc init` wrote elsewhere, such as under
+    /// `%LOCALAPPDATA%\mixenc`) with a repository that holds `start`.
     pub fn find(start: &Path) -> Result<Workspace> {
         let start = std::path::absolute(start)?;
         for dir in start.ancestors() {
@@ -129,7 +131,18 @@ impl Workspace {
                 return Workspace::load(dir);
             }
         }
-        bail!("no {FILE_NAME} in {} or above it (mixenc init writes one)", paths::display(&start))
+        let s = paths::canonical(&start).to_string_lossy().into_owned();
+        for root in registered() {
+            if let Ok(ws) = Workspace::load(&root)
+                && ws.repos().iter().any(|r| paths::is_under(&s, &r.source.to_string_lossy()))
+            {
+                return Ok(ws);
+            }
+        }
+        bail!(
+            "no {FILE_NAME} in {} or above it, and no registered workspace holds it (mixenc init writes one)",
+            paths::display(&start)
+        )
     }
 
     pub fn load(root: &Path) -> Result<Workspace> {
@@ -268,7 +281,53 @@ pub fn init(root: &Path, repos: &[String], wiki: Option<&str>) -> Result<PathBuf
     }
     let text = serde_json::to_string_pretty(&workspace.config)? + "\n";
     fs::write(&file, text).with_context(|| format!("writing {}", paths::display(&file)))?;
+    // A repository outside the workspace finds it through the register.
+    if workspace
+        .repos()
+        .iter()
+        .any(|r| !paths::is_under(&r.source.to_string_lossy(), &workspace.root.to_string_lossy()))
+    {
+        register(&workspace.root)?;
+    }
     Ok(file)
+}
+
+/// mixenc's folder for this user: `MIXENC_HOME`, else `%LOCALAPPDATA%\mixenc`.
+pub fn home() -> PathBuf {
+    if let Some(h) = std::env::var_os("MIXENC_HOME") {
+        return PathBuf::from(h);
+    }
+    PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("mixenc")
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct Register {
+    workspaces: Vec<String>,
+}
+
+fn register_file() -> PathBuf {
+    home().join("workspaces.json")
+}
+
+/// The workspaces `mixenc init` registered whose `mixenc.json` is still there.
+pub fn registered() -> Vec<PathBuf> {
+    let Ok(text) = fs::read_to_string(register_file()) else { return Vec::new() };
+    let r: Register = serde_json::from_str(&text).unwrap_or_default();
+    r.workspaces.into_iter().map(PathBuf::from).filter(|p| p.join(FILE_NAME).is_file()).collect()
+}
+
+/// Adds a workspace to the register (and drops the ones that are gone).
+pub fn register(root: &Path) -> Result<()> {
+    let file = register_file();
+    let mut r: Register =
+        fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let shown = paths::display(root);
+    r.workspaces.retain(|w| Path::new(w).join(FILE_NAME).is_file() && paths::key(w) != paths::key(&shown));
+    r.workspaces.push(shown);
+    let dir = home();
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", paths::display(&dir)))?;
+    crate::fsx::write_replace(&dir, &file, (serde_json::to_string_pretty(&r)? + "\n").as_bytes(), false)
+        .with_context(|| format!("writing {}", paths::display(&file)))
 }
 
 /// Writes (or with `None` removes) a file's entry in the override table of `mixenc.json`, with the

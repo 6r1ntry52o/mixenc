@@ -77,6 +77,7 @@ workspace/
 2. `mixenc.json` の `"clangd"`
 3. `PATH` の `clangd.exe`
 4. vscode-clangd が入れたもの
+5. Neovim の Mason が入れたもの
 
 入口は `mirror\.mixenc\entry.log` にログを残します（この PC の中だけ）。中身は次のとおりです。
 - それぞれの本文がどう届いたか（正しく読んだ・読み違えたので差し替えた）

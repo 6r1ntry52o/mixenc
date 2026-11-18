@@ -96,7 +96,7 @@ client:
   entry itself fails on a message, it passes that message through unchanged and says so.
 
 Which clangd it starts: `MIXENC_CLANGD`, else `"clangd"` in `mixenc.json`, else `clangd.exe` on
-`PATH`, else the one vscode-clangd installed.
+`PATH`, else the one vscode-clangd installed, else the one Neovim's Mason installed.
 
 It keeps a log in `mirror\.mixenc\entry.log` (on this PC only): how each document came (read right,
 misread and replaced), the diagnostics counts, and where definitions and references lead (a
